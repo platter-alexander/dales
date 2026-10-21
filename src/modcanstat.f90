@@ -34,7 +34,8 @@ implicit none
 PUBLIC :: initcanstat, canstat, exitcanstat
 save
 !NetCDF variables
-  integer,parameter :: nvar = 30
+  integer,parameter :: ndiag = 12  !< leaf physiology diagnostics, see do_canstat
+  integer,parameter :: nvar = 31 + ndiag
   integer,parameter :: nvar2 = 3 !variables on cell interfaces
   character(80),dimension(nvar,4) :: ncname
   character(80),dimension(nvar2,4) :: ncname2
@@ -108,6 +109,10 @@ save
   real, allocatable :: PARd_canmn  (:)
   real, allocatable :: PARu_canmn  (:)
   real, allocatable :: cfSLmn   (:)
+  ! leaf physiology diagnostics: 1-2 ci/ca, 3-4 gsw, 5-6 fraction Rubisco-limited,
+  ! 7-8 fraction light-limited, 9-10 ci_func evaluations, 11-12 leaf temperature iterations
+  ! (odd = shaded, even = sunlit)
+  real, allocatable :: diagav(:,:), diagmn(:,:)
 
 contains
 !> Initialization routine, reads namelists and inits variables
@@ -224,6 +229,8 @@ contains
     allocate(PARd_canmn(ncanopy+1))
     allocate(PARu_canmn(ncanopy+1))
     allocate(cfSLmn   (ncanopy))
+    allocate(diagav(ncanopy,ndiag), diagmn(ncanopy,ndiag))
+    diagmn = 0.0
 
     shcanmn   = 0.0
     lecanmn   = 0.0
@@ -298,6 +305,19 @@ contains
         call ncinfo(ncname( 28,:),'absSWleaf_shadmn','Absorbed SW by sahded leaves','W/m2','tt')
         call ncinfo(ncname( 29,:),'absSWleaf_allsunmn','Absorbed SW by sunlit leaves','W/m2','tt')
         call ncinfo(ncname( 30,:),'absSWlayermn','Absorbed SW in the layer','W/m2','tt') ! weighing sunlit and shaded leave fraction
+        call ncinfo(ncname( 31,:),'vcmax25','Vcmax at 25 degC (Farquhar)','umol/m^2/s','tt')
+        call ncinfo(ncname( 32,:),'cica_leafshadmn','Shaded leaves ci/ca','-','tt')
+        call ncinfo(ncname( 33,:),'cica_leafsunmn','Sunlit leaves ci/ca','-','tt')
+        call ncinfo(ncname( 34,:),'gsw_leafshadmn','Shaded leaves stomatal conductance for water vapour','mol/m^2/s','tt')
+        call ncinfo(ncname( 35,:),'gsw_leafsunmn','Sunlit leaves stomatal conductance for water vapour','mol/m^2/s','tt')
+        call ncinfo(ncname( 36,:),'frub_leafshadmn','Shaded leaves fraction Rubisco-limited (Farquhar)','-','tt')
+        call ncinfo(ncname( 37,:),'frub_leafsunmn','Sunlit leaves fraction Rubisco-limited (Farquhar)','-','tt')
+        call ncinfo(ncname( 38,:),'flight_leafshadmn','Shaded leaves fraction light-limited (Farquhar)','-','tt')
+        call ncinfo(ncname( 39,:),'flight_leafsunmn','Sunlit leaves fraction light-limited (Farquhar)','-','tt')
+        call ncinfo(ncname( 40,:),'nci_leafshadmn','Shaded leaves ci solver evaluations per leaf energy balance','-','tt')
+        call ncinfo(ncname( 41,:),'nci_leafsunmn','Sunlit leaves ci solver evaluations per leaf energy balance','-','tt')
+        call ncinfo(ncname( 42,:),'ntl_leafshadmn','Shaded leaves leaf temperature iterations','-','tt')
+        call ncinfo(ncname( 43,:),'ntl_leafsunmn','Sunlit leaves leaf temperature iterations','-','tt')
         call ncinfo(ncname2( 1,:),'PAR_downmn','downwelling PAR within canopy','W/m2','mt')
         call ncinfo(ncname2( 2,:),'PAR_upmn','upwelling PAR within canopy','W/m2','mt')
         call ncinfo(ncname2( 3,:),'paih','Plant area index at half level','m^2/m^2','tt')
@@ -340,8 +360,12 @@ contains
                           t_leafsun,gcc_leafshad,gcc_leafsun,ci_leafshad,ci_leafsun,&
                           absSWleaf_shad,absSWleaf_allsun,absSWlayer,&
                           sh_leafsun,sh_leafshad,le_leafsun,le_leafshad,An_leafsun,An_leafshad,rb_leafsun,rb_leafshad,&
-                          LWin_leafsun,LWin_leafshad,LWout_leafsun,LWout_leafshad,PARd_can,PARu_can
+                          LWin_leafsun,LWin_leafshad,LWout_leafsun,LWout_leafshad,PARd_can,PARu_can,&
+                          cica_leafsun,cica_leafshad,gsw_leafsun,gsw_leafshad,lim_leafsun,lim_leafshad,&
+                          nci_leafsun,nci_leafshad,ntl_leafsun,ntl_leafshad
     implicit none
+    real :: ind(2-ih:i1+ih,2-jh:j1+jh,ncanopy)   ! indicator field for limitation fractions
+    integer :: n
 
     shcanav   = 0.
     lecanav   = 0.
@@ -405,6 +429,27 @@ contains
     call slabsum(PARu_canav         ,1,ncanopy+1, PARu_can(:,:,:)    ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy+1,2,i1,2,j1,1,ncanopy+1)
 
     cfSLav = cfSL  ! no slab average needed as it only depends on time, not on space
+
+    diagav = 0.
+    call slabsum(diagav(:, 1),1,ncanopy, cica_leafshad,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:, 2),1,ncanopy, cica_leafsun ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:, 3),1,ncanopy, gsw_leafshad ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:, 4),1,ncanopy, gsw_leafsun  ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    ind = merge(1., 0., nint(lim_leafshad) == 1)
+    call slabsum(diagav(:, 5),1,ncanopy, ind          ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    ind = merge(1., 0., nint(lim_leafsun) == 1)
+    call slabsum(diagav(:, 6),1,ncanopy, ind          ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    ind = merge(1., 0., nint(lim_leafshad) == 2)
+    call slabsum(diagav(:, 7),1,ncanopy, ind          ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    ind = merge(1., 0., nint(lim_leafsun) == 2)
+    call slabsum(diagav(:, 8),1,ncanopy, ind          ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:, 9),1,ncanopy, nci_leafshad ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:,10),1,ncanopy, nci_leafsun  ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:,11),1,ncanopy, ntl_leafshad ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    call slabsum(diagav(:,12),1,ncanopy, ntl_leafsun  ,2-ih,i1+ih,2-jh,j1+jh,1,ncanopy,2,i1,2,j1,1,ncanopy)
+    do n = 1, ndiag
+      diagmn(:,n) = diagmn(:,n) + diagav(:,n) / ijtot
+    end do
  !    ADD SLAB AVERAGES TO TIME MEAN
 
     shcanmn      = shcanmn     + shcanav     / ijtot
@@ -446,8 +491,10 @@ contains
       use modglobal, only : cexpnr,ifoutput,zf,rtimee,zh
       use modstat_nc, only: lnetcdf, writestat_nc
       use modgenstat, only: ncid_prof=>ncid,nrec_prof=>nrec
-      use modcanopy, only : ncanopy,paif,padf,paih
+      use modcanopy, only : ncanopy,paif,padf,paih,ileafphys,ileafphys_farquhar
+      use modfarquhar, only : vcmax25_can
       implicit none
+      real :: vc25(ncanopy)
       real,dimension(ncanopy,nvar) :: vars
       real,dimension(ncanopy+1,nvar2) :: vars2
       integer nsecs, nhrs, nminut,k
@@ -488,6 +535,12 @@ contains
       lecanmn    = lecanmn    /nsamples
       fco2canmn  = fco2canmn  /nsamples
       cfSLmn     = cfSLmn     /nsamples
+      diagmn     = diagmn     /nsamples
+      if (ileafphys == ileafphys_farquhar) then
+        vc25 = vcmax25_can
+      else
+        vc25 = 0.
+      endif
   !     ----------------------
   !     2.0  write the fields
   !           ----------------
@@ -499,20 +552,22 @@ contains
       ,'#',(timeav),'--- AVERAGING TIMESTEP --- '      &
       ,nhrs,':',nminut,':',nsecs      &
       ,'   HRS:MIN:SEC AFTER INITIALIZATION '
-      write (ifoutput,'(A/5A/5A)') &
+      write (ifoutput,'(A/6A/6A)') &
           '#--------------------------------------------------------------------------' &
           ,'#LEV     HEIGHT    HEIGHT_H    PAD         PAI          PAI_H       cfSL_H'&
           ,'      SH_CAN       LE_CAN       FCO2_CAN      S_THETA       S_QT        S_CO2     ' &
           ,'T_LSHAD   T_LSUN   GCC_LSHAD    GCC_LSUN    CI_LSHAD  CI_LSUN   SH_LSHAD     SH_LSUN   '&
           ,'   LE_LSHAD      LE_SUN     AN_LSHAD      AN_LSUN      RB_LSHAD   RB_LSUN'&
           ,' LWIN_LSHAD LWIN_LSUN LWOUT_LSHAD LWOUT_LSUN  absSW_LSHAD absSW_LSUN absSW_LAYER' &
+          ,'  VCMAX25 CICA_LSHAD CICA_LSUN GSW_LSHAD    GSW_LSUN     FRUB_LSHAD FRUB_LSUN FLIGHT_LSHAD FLIGHT_LSUN NCI_LSHAD NCI_LSUN NTL_LSHAD NTL_LSUN' &
           ,'#          (M)       (M)    (M^2/M^3)    (M^2/M^2)    (M^2/M^2)      (-)'&
           ,'        (W/M^3)      (W/M^3) (mg C / S / M^3)    (K/S)      (KG/(KG S)   (PPB/S)  '&
           ,'    (K)      (K)     (mg C /S)    (mg C /S)  (mg/M^3) (mg/M^3)    (W/M^2)      (W/M^2)   '&
           ,'   (W/M^2)      (W/M^2) (mg C /S /M^2)(mg C /S /M^2)   (S/M)        (S/M)    '&
-          ,' (W/M^2)  (W/M^2)  (W/M^2)  (W/M^2)   (W/M^2)   (W/M^2)   (W/M^2)'
+          ,' (W/M^2)  (W/M^2)  (W/M^2)  (W/M^2)   (W/M^2)   (W/M^2)   (W/M^2)' &
+          ,' (UMOL/M2/S)  (-)     (-)    (MOL/M2/S)   (MOL/M2/S)      (-)       (-)        (-)          (-)        (-)       (-)       (-)       (-)'
       do k=1,ncanopy
-        write(ifoutput,'(I4,2F10.2,10E13.4,2F9.3,2E13.4,2F9.3,8E13.4,7F9.3)') &
+        write(ifoutput,'(I4,2F10.2,10E13.4,2F9.3,2E13.4,2F9.3,8E13.4,7F9.3,F9.3,2F10.4,2E13.4,4F11.4,4F10.2)') &
             k,zf(k),zh(k),padf(k),paif(k),paih(k),&
             cfSLmn(k),            &
             shcanmn(k),           &
@@ -541,7 +596,8 @@ contains
             LWout_leafsunmn(k),   &
             absSWleaf_shadmn(k),  &
             absSWleaf_allsunmn(k),&
-            absSWlayermn(k)
+            absSWlayermn(k),      &
+            vc25(k), diagmn(k,:)
       end do
       close (ifoutput)
 
@@ -576,6 +632,8 @@ contains
         vars(:, 28) = absSWleaf_shadmn
         vars(:, 29) = absSWleaf_allsunmn
         vars(:, 30) = absSWlayermn
+        vars(:, 31) = vc25
+        vars(:, 32:31+ndiag) = diagmn
         vars2(:, 1) = PARd_canmn
         vars2(:, 2) = PARu_canmn
         vars2(:, 3) = paih(:ncanopy+1)
@@ -614,6 +672,7 @@ contains
     absSWlayermn  = 0.0
     PARd_canmn = 0.0
     PARu_canmn = 0.0
+    diagmn     = 0.0
 
   end subroutine writecanstat
 
@@ -635,6 +694,7 @@ contains
     deallocate(absSWleaf_shadmn,absSWleaf_allsunmn,absSWlayermn)
     deallocate(sh_leafshadmn,sh_leafsunmn,le_leafshadmn,le_leafsunmn,An_leafshadmn,An_leafsunmn,rb_leafshadmn,rb_leafsunmn)
     deallocate(LWin_leafshadmn,LWin_leafsunmn,LWout_leafshadmn,LWout_leafsunmn)
+    deallocate(diagav,diagmn)
 
   end subroutine exitcanstat
 

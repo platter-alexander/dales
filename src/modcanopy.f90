@@ -130,6 +130,13 @@ module modcanopy
   real, allocatable :: t_leafsun_old   (:,:,:) !< temperature of sunny leaves in previous timestep[m s-1]
   real, allocatable :: t_leafshad_old  (:,:,:) !< temperature of shaded leaves in previous timestep[m s-1]
   real, allocatable :: PA              (:)     !< Plant Area at full level [m2 leaf/m2] = projection of PAD into horizontal assuming minimum leaf overlap per layer
+  ! diagnostics of the leaf physiology (sunlit / shaded)
+  real, allocatable :: cica_leafsun (:,:,:), cica_leafshad (:,:,:) !< ci / ca [-]
+  real, allocatable :: gsw_leafsun  (:,:,:), gsw_leafshad  (:,:,:) !< stomatal conductance for water vapour [mol m-2 s-1]
+  real, allocatable :: lim_leafsun  (:,:,:), lim_leafshad  (:,:,:) !< limiting rate (Farquhar): 0 dark, 1 Rubisco, 2 light, 3 export; -1 for A-gs
+  real, allocatable :: nci_leafsun  (:,:,:), nci_leafshad  (:,:,:) !< ci_func evaluations per leaf energy balance solve (Farquhar)
+  real, allocatable :: ntl_leafsun  (:,:,:), ntl_leafshad  (:,:,:) !< leaf temperature iterations (num_iterations+1 = not converged)
+  real :: last_cica, last_gsw, last_ntl                            !< set by leafeb_ags for the most recent leaf
 
   real, allocatable :: tskin_can       (:,:) !< tskin at canopy top
   real, allocatable :: albdir_can      (:,:,:) !< effective direct SW albedo by canopy
@@ -451,6 +458,11 @@ contains
     allocate(t_leafsun_old(2-ih:i1+ih,2-jh:j1+jh,ncanopy))
     allocate(t_leafshad_old(2-ih:i1+ih,2-jh:j1+jh,ncanopy))
     allocate(PA(ncanopy))
+    allocate(cica_leafsun(2-ih:i1+ih,2-jh:j1+jh,ncanopy), cica_leafshad(2-ih:i1+ih,2-jh:j1+jh,ncanopy))
+    allocate(gsw_leafsun (2-ih:i1+ih,2-jh:j1+jh,ncanopy), gsw_leafshad (2-ih:i1+ih,2-jh:j1+jh,ncanopy))
+    allocate(lim_leafsun (2-ih:i1+ih,2-jh:j1+jh,ncanopy), lim_leafshad (2-ih:i1+ih,2-jh:j1+jh,ncanopy))
+    allocate(nci_leafsun (2-ih:i1+ih,2-jh:j1+jh,ncanopy), nci_leafshad (2-ih:i1+ih,2-jh:j1+jh,ncanopy))
+    allocate(ntl_leafsun (2-ih:i1+ih,2-jh:j1+jh,ncanopy), ntl_leafshad (2-ih:i1+ih,2-jh:j1+jh,ncanopy))
     allocate(tskin_can (i2,j2)) ! same dims as surface variables
     allocate(albdir_can(i2,j2,n_bands_sw))
     allocate(albdif_can(i2,j2,n_bands_sw))
@@ -477,6 +489,11 @@ contains
     lw_leaflayer = 0
     ci_leafsun  = 0.   ! 0 = not set yet; the Farquhar solver then starts from 0.7 ca
     ci_leafshad = 0.
+    cica_leafsun = 0. ; cica_leafshad = 0.
+    gsw_leafsun  = 0. ; gsw_leafshad  = 0.
+    lim_leafsun  = 0. ; lim_leafshad  = 0.
+    nci_leafsun  = 0. ; nci_leafshad  = 0.
+    ntl_leafsun  = 0. ; ntl_leafshad  = 0.
 
     do k=1,ncanopy
        PA(k) = padh(k) * dzh(k)!  Plant Area at full levels[m2!PA2
@@ -612,6 +629,8 @@ contains
     deallocate(ci_leafshad_old)
     deallocate(ci_leafsun)
     deallocate(ci_leafsun_old)
+    deallocate(cica_leafsun, cica_leafshad, gsw_leafsun, gsw_leafshad, lim_leafsun, lim_leafshad)
+    deallocate(nci_leafsun, nci_leafshad, ntl_leafsun, ntl_leafshad)
     deallocate(tskin_can)
     deallocate(albdir_can)
     deallocate(albdif_can)
@@ -765,6 +784,8 @@ contains
                       gcc_leafshad_old(i,j,k_can),ci_leafshad_old(i,j,k_can),rk3coef,vc25,                       & ! in
                       t_leafshad(i,j,k_can), gcc_leafshad(i,j,k_can), rb_leafshad(i,j,k_can),ci_leafshad(i,j,k_can),& ! out
                       sh_leafshad(i,j,k_can), le_leafshad(i,j,k_can), LWout_leafshad(i,j,k_can),An_leafshad(i,j,k_can))       ! out
+      call store_leafdiag(cica_leafshad(i,j,k_can), gsw_leafshad(i,j,k_can), lim_leafshad(i,j,k_can), &
+                          nci_leafshad(i,j,k_can), ntl_leafshad(i,j,k_can))
 
       if (lrelaxgc_can) then
         if (gccan_old_set .and. rk3step ==3) then
@@ -792,6 +813,8 @@ contains
                         gcc_leafsun_old(i,j,k_can),ci_leafsun_old(i,j,k_can),rk3coef,vc25,                          & ! in
                         t_leafsun(i,j,k_can), gcc_leafsun(i,j,k_can), rb_leafsun(i,j,k_can),ci_leafsun(i,j,k_can),     & ! out
                         sh_leafsun(i,j,k_can), le_leafsun(i,j,k_can), LWout_leafsun(i,j,k_can),An_leafsun(i,j,k_can))            ! out
+        call store_leafdiag(cica_leafsun(i,j,k_can), gsw_leafsun(i,j,k_can), lim_leafsun(i,j,k_can), &
+                            nci_leafsun(i,j,k_can), ntl_leafsun(i,j,k_can))
 
         if (lrelaxgc_can) then
           if (gccan_old_set .and. rk3step ==3) then
@@ -1050,6 +1073,8 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
       !modified by Xabi Pedruzo March 2020 to work with Ags and another
       !canopy radiative scheme (Pedruzo-Bagazgoitia et al. 2017)
+       use modsurfdata, only : nuco2q, MW_Air
+       use modfarquhar, only : fq_ncifunc
        implicit none
 
        ! ---- incoming variables
@@ -1123,6 +1148,7 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
        ! --- check for negative windspeed and force minimum windspeed (wind_mn)
 
        wind = max(abs(ws), wind_mn)
+       fq_ncifunc = 0   ! diagnostics: count ci_func evaluations of this leaf
 
        ! --- calculate current air density [kg m-3]
        !     where, rho(air) = rho(dry_air) + rho(vapor)
@@ -1287,8 +1313,32 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
        endif
        tleaf = t_g    ! return final guess t_g as tleaf [K]
        rb    = 1./gb  ! boundary layer heat resistance [s m-1]
+
+       ! diagnostics (stored by canopyeb through store_leafdiag)
+       last_ntl  = real(ii)                                    ! num_iterations+1 if not converged
+       last_cica = ci / co2abs
+       last_gsw  = gccleaf * nuco2q * rho / (MW_Air * 1.e-3)   ! [m s-1] CO2 -> [mol m-2 s-1] H2O
        return
  end subroutine leafeb_ags
+
+subroutine store_leafdiag(cica, gsw, lim, nci, ntl)
+! ======================================================================
+! Copy the diagnostics of the most recent leafeb_ags call into the fields
+! ======================================================================
+       use modfarquhar, only : fq_lim, fq_ncifunc
+       implicit none
+       real, intent(out) :: cica, gsw, lim, nci, ntl
+       cica = last_cica
+       gsw  = last_gsw
+       ntl  = last_ntl
+       if (ileafphys == ileafphys_farquhar) then
+         lim = real(fq_lim)
+         nci = real(fq_ncifunc)
+       else
+         lim = -1.
+         nci = 0.
+       endif
+end subroutine store_leafdiag
 
 subroutine leafphys(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
                     phi_tot,Hleaf,gb,vcmax25,                     & ! in

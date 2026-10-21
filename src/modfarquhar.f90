@@ -51,7 +51,7 @@ module modfarquhar
   implicit none
   private
   public :: initfarquhar, exitfarquhar, farquhar_set_params, farquhar_dales, farquhar_leaf, &
-            vcmax25_can, ivcmax
+            vcmax25_can, ivcmax, fq_lim, fq_ncifunc
 
   save
 
@@ -107,6 +107,10 @@ module modfarquhar
   real :: vcmaxc, jmaxc, tpuc, lmrc       !< Scaling factors for high-temperature inhibition
   real :: jmax_vcmax                      !< Jmax25 / Vcmax25 [-]
   real, allocatable :: vcmax25_can(:)     !< Vcmax at 25 degC per canopy level [umol m-2 s-1]
+
+  ! ---- Diagnostics of the most recent leaf calculation (read by modcanopy)
+  integer :: fq_lim     = 0   !< limiting rate: 0 = dark, 1 = Rubisco (Wc), 2 = light (Wj), 3 = export (Wp)
+  integer :: fq_ncifunc = 0   !< number of ci_func evaluations since last reset (reset by the caller)
 
   ! ---- ci solver settings (CLM5 hybrid and brent)
   integer, parameter :: itmax_hybrid = 40
@@ -367,6 +371,7 @@ contains
       ag     = 0.
       an     = -le%rd
       gs_mol = g0_medlyn
+      fq_lim = 0
       return
     endif
 
@@ -391,6 +396,8 @@ contains
     real, intent(out) :: fval, an, gs_mol, ag
     real :: wc, wj, wp, ai, r1, r2, cs, term, aquad, bquad, cquad
 
+    fq_ncifunc = fq_ncifunc + 1
+
     if (ci > le%cp) then
       wc = le%vcmax * (ci - le%cp) / (ci + le%kc * (1. + le%oair / le%ko))
       wj = le%je    * (ci - le%cp) / (4. * ci + 8. * le%cp)
@@ -405,6 +412,14 @@ contains
     call quadratic(theta_ip, -(ai + wp), ai * wp, r1, r2)
     ag = max(0., min(r1, r2))
     an = ag - le%rd
+
+    if (wp < ai) then
+      fq_lim = 3
+    else if (wc <= wj) then
+      fq_lim = 1
+    else
+      fq_lim = 2
+    endif
 
     if (an < 0.) then
       ! CTSM: stop iterating, stomata at minimum conductance
