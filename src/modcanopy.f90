@@ -152,6 +152,7 @@ contains
     use modsurfdata, only : nangle_gauss,ldiscr,lsplitleaf,l3leaves, canrad_band, canrad_bands_sw, n_bands_sw, albedoav_surf
     use modfields,   only : tmp0
     use modraddata,  only : kmin
+    use modfarquhar, only : initfarquhar
 
     implicit none
 
@@ -184,8 +185,8 @@ contains
         print *, 'ileafphys = ', ileafphys
         stop 'ERROR: ileafphys in NAMCANOPY must be 1 (A-gs) or 2 (Farquhar)'
       endif
-      if (ileafphys == ileafphys_farquhar) then
-        stop 'ERROR: ileafphys = 2 (Farquhar) is not implemented yet'
+      if (ileafphys == ileafphys_farquhar .and. (lrelaxgc_can .or. lrelaxci_can)) then
+        stop 'ERROR: lrelaxgc_can / lrelaxci_can are not available with ileafphys = 2 (Farquhar)'
       endif
     endif
 
@@ -395,6 +396,8 @@ contains
 
     if (.not. (lcanopyeb)) return
 
+    if (ileafphys == ileafphys_farquhar) call initfarquhar(ncanopy, paif)
+
     kmin = ncanopy+1 ! set bottom level of rrtmg
 
     ldiscr = .true. ! use difference between canopy levels instead of analytic derivative in canopyrad_sw
@@ -472,6 +475,8 @@ contains
     lwd_can   = 0
     lwu_can   = 0
     lw_leaflayer = 0
+    ci_leafsun  = 0.   ! 0 = not set yet; the Farquhar solver then starts from 0.7 ca
+    ci_leafshad = 0.
 
     do k=1,ncanopy
        PA(k) = padh(k) * dzh(k)!  Plant Area at full levels[m2!PA2
@@ -539,9 +544,12 @@ contains
   end subroutine canopy
 
   subroutine exitcanopy
+    use modfarquhar, only : exitfarquhar
     implicit none
 
     if (.not. (lcanopy)) return
+
+    call exitfarquhar
 
     deallocate(padfactor  )
     deallocate(ppad       )
@@ -638,6 +646,7 @@ contains
                            canopyrad_sw_N79,canopyrad_sw_GvL94,canopyrad_lw_N79,pCw,tskinm_surf,canrad_bands_sw,n_bands_sw
     use modfields, only  : rhof,qt0,exnf,u0,v0,presf,svm,tmp0
     use modraddata, only : swdir,swdif,swd,swu,lwu,lwd,sfc_emis,iradiation,irad_par,irad_rrtmg,irad_lsm,rad_longw,zenith,tnext,itimerad
+    use modfarquhar, only : vcmax25_can
     implicit none
 
     integer, intent(in) :: i,j
@@ -646,6 +655,7 @@ contains
     integer :: k_can,k
     real    :: SWdirTOC,SWdifTOC,lwdTOC
     real    :: kdrbl,sinbeta, exner
+    real    :: vc25   ! Vcmax25 of the current canopy level (Farquhar)
     logical :: update_canrad = .false.
 
    !                                                                  !
@@ -743,11 +753,16 @@ contains
     !                                                                                                !
     windsp(:) = sqrt(u0(i,j,1:ncanopy)**2+v0(i,j,1:ncanopy)**2)
     do k_can =1,ncanopy
+      if (ileafphys == ileafphys_farquhar) then
+        vc25 = vcmax25_can(k_can)
+      else
+        vc25 = 0.   ! not used by A-gs
+      endif
      !shaded
       call leafeb_ags(absSWleaf_shad(i,j,k_can), absPARleaf_shad(i,j,k_can), LWin_leafshad(i,j,k_can), leaf_eps, transpiretype, lwidth, llength, & ! in
                       tmp0(i,j,k_can), humidairpa(k_can),qt0(i,j,k_can), windsp(k_can), presf(k_can),       & ! in
                       rhof(k_can), svm(i,j,k_can,indCO2), phitot(i,j),                                      & ! in
-                      gcc_leafshad_old(i,j,k_can),ci_leafshad_old(i,j,k_can),rk3coef,                       & ! in
+                      gcc_leafshad_old(i,j,k_can),ci_leafshad_old(i,j,k_can),rk3coef,vc25,                       & ! in
                       t_leafshad(i,j,k_can), gcc_leafshad(i,j,k_can), rb_leafshad(i,j,k_can),ci_leafshad(i,j,k_can),& ! out
                       sh_leafshad(i,j,k_can), le_leafshad(i,j,k_can), LWout_leafshad(i,j,k_can),An_leafshad(i,j,k_can))       ! out
 
@@ -774,7 +789,7 @@ contains
         call leafeb_ags(absSWleaf_allsun(i,j,k_can), absPARleaf_allsun(i,j,k_can),LWin_leafsun(i,j,k_can), leaf_eps, transpiretype, lwidth, llength, & ! in
                         tmp0(i,j,k_can), humidairpa(k_can),qt0(i,j,k_can), windsp(k_can), presf(k_can),        & ! in
                         rhof(k_can), svm(i,j,k_can,indCO2), phitot(i,j),                                       & ! in
-                        gcc_leafsun_old(i,j,k_can),ci_leafsun_old(i,j,k_can),rk3coef,                          & ! in
+                        gcc_leafsun_old(i,j,k_can),ci_leafsun_old(i,j,k_can),rk3coef,vc25,                          & ! in
                         t_leafsun(i,j,k_can), gcc_leafsun(i,j,k_can), rb_leafsun(i,j,k_can),ci_leafsun(i,j,k_can),     & ! out
                         sh_leafsun(i,j,k_can), le_leafsun(i,j,k_can), LWout_leafsun(i,j,k_can),An_leafsun(i,j,k_can))            ! out
 
@@ -1011,6 +1026,7 @@ contains
 subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! incoming
                           tairk, humairpa,qtair, ws, pres,             & ! in
                           rho, CO2air, phi_tot,gcc_old,ci_old,rk3coef, & ! in
+                          vcmax25,                                     & ! in
                           tleaf, gccleaf,rb,ci,                        & ! in/out
                           sh, le, LWout, An )                            ! out
 ! ======================================================================
@@ -1055,7 +1071,8 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
                               phi_tot,          &      ! Total soil water content [-]
                               gcc_old,          &      ! gc in previous timestep
                               ci_old,           &      ! ci in previous timestep
-                              rk3coef                  ! runge-kutta timestep
+                              rk3coef,          &      ! runge-kutta timestep
+                              vcmax25                  ! Vcmax at 25 degC of this level [umol m-2 s-1] (Farquhar only)
                               !dt,               &      ! time-step duration [s]
                               !psir,             &      ! root-zone soil water potential [m]
                               !xw2,              &      ! soil moist. parameter controling slope in Ball-Berry model
@@ -1153,15 +1170,15 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
        !assume SW=2.0*PAR
        !i_PAR = 0.5*max(0.1,abs(i_s))
        !i_PAR = 0.44*max(0.1,abs(i_s))
+       !get leaf boundary layer (before leafphys: needed by Farquhar)
+       gb = leafblc(tleaf_l,tairk,wind,lwidth,llength)
+
        call leafphys(CO2air,qtair,rho,tairk,pres,tleaf_l,                & ! in
-                  phi_tot,i_p,                                      & ! in
+                  phi_tot,i_p,gb,vcmax25,                                      & ! in
                   lrelaxgc_can,gccan_old_set,kgc_can,gcc_old,rk3coef, & ! in
                   lrelaxci_can,cican_old_set,kci_can,ci_old,          & ! in
                   gccleaf,Fleaf,ci,                                   & ! out
                   fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin)       ! out
-
-       !get leaf boundary layer
-       gb = leafblc(tleaf_l,tairk,wind,lwidth,llength)
 
        sh      = leafh(tdelt,gb,rho)                                   ! sensible heat flux at this tleaf [W m-2]
        le      = leafle(tleaf_l,humidairkgm3,gb,gccleaf,transpiretype)  ! latent heat flux at this tleaf  [W m-2]
@@ -1174,15 +1191,15 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
        tdelt = tleaf_r - tairk            ! --- current delta_T = T_leaf - T_air [K]
 
+       !get leaf boundary layer (before leafphys: needed by Farquhar)
+       gb = leafblc(tleaf_r,tairk,wind,lwidth,llength)
+
        call leafphys(CO2air,qtair,rho,tairk,pres,tleaf_r,                & ! in
-                  phi_tot,i_p,                                      & ! in
+                  phi_tot,i_p,gb,vcmax25,                                      & ! in
                   lrelaxgc_can,gccan_old_set,kgc_can,gcc_old,rk3coef, & ! in
                   lrelaxci_can,cican_old_set,kci_can,ci_old,          & ! in
                   gccleaf,Fleaf,ci,                                   & ! out
                   fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin)       ! out
-
-       !get leaf boundary layer
-       gb = leafblc(tleaf_r,tairk,wind,lwidth,llength)
 
        sh      = leafh(tdelt,gb,rho)                                   ! sensible heat flux at this tleaf [W m-2]
        le      = leafle(tleaf_r,humidairkgm3,gb,gccleaf,transpiretype)  ! latent heat flux at this tleaf  [W m-2]
@@ -1224,15 +1241,15 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
           tdelt = t_g - tairk
 
+          !get leaf boundary layer (before leafphys: needed by Farquhar)
+          gb = leafblc(t_g,tairk,wind,lwidth,llength)
+
           call leafphys(CO2air,qtair,rho,tairk,pres,t_g,                    & ! in
-                     phi_tot,i_p,                                      & ! in
+                     phi_tot,i_p,gb,vcmax25,                                      & ! in
                      lrelaxgc_can,gccan_old_set,kgc_can,gcc_old,rk3coef, & ! in
                      lrelaxci_can,cican_old_set,kci_can,ci_old,          & ! in
                      gccleaf,Fleaf,ci,                                   & ! out
                      fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin)       ! out
-
-          !get leaf boundary layer
-          gb = leafblc(t_g,tairk,wind,lwidth,llength)
 
           sh      = leafh(tdelt,gb,rho)                               ! sensible heat flux at this t_g [W m-2]
           le      = leafle(t_g,humidairkgm3,gb,gccleaf,transpiretype)  ! latent heat flux at this t_g  [W m-2]
@@ -1263,30 +1280,40 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
 100    continue
 
-       An    = leafco2f(co2abs,ci, gb, gccleaf, transpiretype)
+       if (ileafphys == ileafphys_farquhar) then
+         An  = Fleaf   ! net CO2 flux from the biochemistry, consistent with ci, gb and gccleaf
+       else
+         An  = leafco2f(co2abs,ci, gb, gccleaf, transpiretype)
+       endif
        tleaf = t_g    ! return final guess t_g as tleaf [K]
        rb    = 1./gb  ! boundary layer heat resistance [s m-1]
        return
  end subroutine leafeb_ags
 
 subroutine leafphys(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
-                    phi_tot,Hleaf,                                & ! in
+                    phi_tot,Hleaf,gb,vcmax25,                     & ! in
                     lrelaxgc,gc_old_set,kgc,gleaf_old,rk3coef,    & ! in
                     lrelaxci,ci_old_set,kci,ci_old,               & ! in
-                    gleaf,Fleaf,ci,                               & ! out
+                    gleaf,Fleaf,ci,                               & ! out (ci in/out)
                     fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin) ! out
 ! ======================================================================
 ! Dispatch to the leaf physiology model selected by ileafphys.
-! Arguments as in f_Ags (modsurfdata).
+! Arguments as in f_Ags (modsurfdata), plus gb and vcmax25 for Farquhar.
+! For Farquhar, ci on input is the previous value (warm start of the solver)
+! and only gleaf, Fleaf, ci, co2abs, CO2comp and fstr are set.
 ! ======================================================================
        use modsurfdata, only : f_Ags
+       use modfarquhar, only : farquhar_dales
 
        implicit none
 
        real,    intent(in)  :: CO2air,qtair,dens,tairk,pair,t_skin,phi_tot,Hleaf
+       real,    intent(in)  :: gb       ! leaf boundary layer conductance for heat [m s-1]
+       real,    intent(in)  :: vcmax25  ! Vcmax at 25 degC of this level [umol m-2 s-1]
        logical, intent(in)  :: lrelaxgc,gc_old_set,lrelaxci,ci_old_set
        real,    intent(in)  :: kgc,gleaf_old,rk3coef,kci,ci_old
-       real,    intent(out) :: gleaf,Fleaf,ci
+       real,    intent(out) :: gleaf,Fleaf
+       real,    intent(inout) :: ci
        real,    intent(out) :: fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin
 
        select case (ileafphys)
@@ -1298,7 +1325,15 @@ subroutine leafphys(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
                      gleaf,Fleaf,ci,                               & ! out
                      fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin) ! out
        case (ileafphys_farquhar)
-          stop 'ERROR: Farquhar leaf physiology (ileafphys = 2) is not implemented yet'
+          call farquhar_dales(CO2air,qtair,dens,pair,t_skin,phi_tot,Hleaf, & ! in
+                              gb,vcmax25,                                & ! in
+                              gleaf,Fleaf,ci,co2abs,CO2comp,fstr)          ! out (ci in/out)
+          Am     = 0.
+          Rdark  = 0.
+          alphac = 0.
+          Ds     = 0.
+          D0     = 0.
+          fmin   = 0.
        end select
  end subroutine leafphys
 
