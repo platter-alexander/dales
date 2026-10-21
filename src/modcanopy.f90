@@ -78,6 +78,9 @@ module modcanopy
   logical  :: tleaf_old_set = .false.  !<
   logical  :: lcanradbands = .false.   !< read spectral bands (reflectivity "sigma" values and weights) of shortwave canopy scheme from file
   logical  :: canradactive = .false.   !< Set to true after first call to canopy radiative transfer scheme, used in rrtmg
+  integer, parameter :: ileafphys_ags = 1       !< leaf physiology: A-gs (Jacobs 1994 / Ronda 2001)
+  integer, parameter :: ileafphys_farquhar = 2  !< leaf physiology: Farquhar et al. (1980) following CLM5
+  integer  :: ileafphys    = ileafphys_ags  !< Switch for leaf physiology model in lcanopyeb (1 = A-gs, 2 = Farquhar)
 
   real, allocatable :: absleaf_shad_b   (:,:,:,:) !< per-band SW absorbed at shaded leaves per canopy vertical level [W m-2 leaf]
   real, allocatable :: absSWleaf_shad   (:,:,:) !< total SW absorbed at shaded leaves per canopy vertical level [W m-2 leaf]
@@ -160,7 +163,8 @@ contains
                         wth_total, wqt_total, wsv_total, wth_can, wqt_can, wsv_can, &
                         wth_alph, wqt_alph, wsv_alph, &
                         lcanopyeb,lwidth,llength,transpiretype,leaf_eps,lclump,&
-                        lrelaxgc_can,kgc_can,lrelaxci_can,kci_can,sw_canrad_meth,lcanradbands
+                        lrelaxgc_can,kgc_can,lrelaxci_can,kci_can,sw_canrad_meth,lcanradbands,&
+                        ileafphys
 
 
     if(myid==0) then
@@ -175,6 +179,14 @@ contains
       close(ifnamopt)
 
       ncanopy = min(ncanopy,kmax)
+
+      if (ileafphys /= ileafphys_ags .and. ileafphys /= ileafphys_farquhar) then
+        print *, 'ileafphys = ', ileafphys
+        stop 'ERROR: ileafphys in NAMCANOPY must be 1 (A-gs) or 2 (Farquhar)'
+      endif
+      if (ileafphys == ileafphys_farquhar) then
+        stop 'ERROR: ileafphys = 2 (Farquhar) is not implemented yet'
+      endif
     endif
 
     if(lsplitleaf .and. lcanopyeb) then
@@ -280,6 +292,7 @@ contains
     call MPI_BCAST(lrelaxci_can ,   1, mpi_logical , 0, comm3d, mpierr)
     call MPI_BCAST(kci_can      ,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(sw_canrad_meth  ,   1, mpi_integer , 0, comm3d, mpierr)
+    call MPI_BCAST(ileafphys    ,   1, mpi_integer , 0, comm3d, mpierr)
 
     if (.not. (lcanopy)) return
 
@@ -1021,8 +1034,6 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
       !modified by Xabi Pedruzo March 2020 to work with Ags and another
       !canopy radiative scheme (Pedruzo-Bagazgoitia et al. 2017)
-       use modsurfdata, only : f_Ags
-
        implicit none
 
        ! ---- incoming variables
@@ -1142,7 +1153,7 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
        !assume SW=2.0*PAR
        !i_PAR = 0.5*max(0.1,abs(i_s))
        !i_PAR = 0.44*max(0.1,abs(i_s))
-       call f_Ags(CO2air,qtair,rho,tairk,pres,tleaf_l,                & ! in
+       call leafphys(CO2air,qtair,rho,tairk,pres,tleaf_l,                & ! in
                   phi_tot,i_p,                                      & ! in
                   lrelaxgc_can,gccan_old_set,kgc_can,gcc_old,rk3coef, & ! in
                   lrelaxci_can,cican_old_set,kci_can,ci_old,          & ! in
@@ -1163,7 +1174,7 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
        tdelt = tleaf_r - tairk            ! --- current delta_T = T_leaf - T_air [K]
 
-       call f_Ags(CO2air,qtair,rho,tairk,pres,tleaf_r,                & ! in
+       call leafphys(CO2air,qtair,rho,tairk,pres,tleaf_r,                & ! in
                   phi_tot,i_p,                                      & ! in
                   lrelaxgc_can,gccan_old_set,kgc_can,gcc_old,rk3coef, & ! in
                   lrelaxci_can,cican_old_set,kci_can,ci_old,          & ! in
@@ -1213,7 +1224,7 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
 
           tdelt = t_g - tairk
 
-          call f_Ags(CO2air,qtair,rho,tairk,pres,t_g,                    & ! in
+          call leafphys(CO2air,qtair,rho,tairk,pres,t_g,                    & ! in
                      phi_tot,i_p,                                      & ! in
                      lrelaxgc_can,gccan_old_set,kgc_can,gcc_old,rk3coef, & ! in
                      lrelaxci_can,cican_old_set,kci_can,ci_old,          & ! in
@@ -1257,6 +1268,39 @@ subroutine leafeb_ags(i_s, i_p, i_r, eps, transpiretype, lwidth, llength,   & ! 
        rb    = 1./gb  ! boundary layer heat resistance [s m-1]
        return
  end subroutine leafeb_ags
+
+subroutine leafphys(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
+                    phi_tot,Hleaf,                                & ! in
+                    lrelaxgc,gc_old_set,kgc,gleaf_old,rk3coef,    & ! in
+                    lrelaxci,ci_old_set,kci,ci_old,               & ! in
+                    gleaf,Fleaf,ci,                               & ! out
+                    fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin) ! out
+! ======================================================================
+! Dispatch to the leaf physiology model selected by ileafphys.
+! Arguments as in f_Ags (modsurfdata).
+! ======================================================================
+       use modsurfdata, only : f_Ags
+
+       implicit none
+
+       real,    intent(in)  :: CO2air,qtair,dens,tairk,pair,t_skin,phi_tot,Hleaf
+       logical, intent(in)  :: lrelaxgc,gc_old_set,lrelaxci,ci_old_set
+       real,    intent(in)  :: kgc,gleaf_old,rk3coef,kci,ci_old
+       real,    intent(out) :: gleaf,Fleaf,ci
+       real,    intent(out) :: fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin
+
+       select case (ileafphys)
+       case (ileafphys_ags)
+          call f_Ags(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
+                     phi_tot,Hleaf,                                & ! in
+                     lrelaxgc,gc_old_set,kgc,gleaf_old,rk3coef,    & ! in
+                     lrelaxci,ci_old_set,kci,ci_old,               & ! in
+                     gleaf,Fleaf,ci,                               & ! out
+                     fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin) ! out
+       case (ileafphys_farquhar)
+          stop 'ERROR: Farquhar leaf physiology (ileafphys = 2) is not implemented yet'
+       end select
+ end subroutine leafphys
 
 real function leafh(tdelt,gb,rho)
 ! ======================================================================
