@@ -696,7 +696,10 @@ subroutine canopyrad_lw_N79(layers,LA,lwd_TOC,T_shad,T_sun, cfSL, tau_dif_can, &
   real, intent(in)   :: tskin_sfc, leaf_eps
   logical, intent(in)   :: only_fluxes
 
-  real, intent(out),dimension(layers)    :: LW_in_leaf_shad, LW_in_leaf_sun  ! LW radiation going into leaves from both side [W/m2leaf]
+  ! inout, not out: with only_fluxes = .true. they are not set here and must keep their values
+  ! (with intent(out), optimised builds copied an uninitialised temporary back into the
+  ! non-contiguous actual arguments LWin_leaf*(i,j,:), which corrupted the output of these fields)
+  real, intent(inout),dimension(layers)  :: LW_in_leaf_shad, LW_in_leaf_sun  ! LW radiation going into leaves from both side [W/m2leaf]
   real, intent(out),dimension(layers+1)    :: lwd_can, lwu_can  ! LW fluxes
 
   real, dimension(2*(layers+1)) :: m_a, m_c, m_d ! matrix coefficients (m_b==1)
