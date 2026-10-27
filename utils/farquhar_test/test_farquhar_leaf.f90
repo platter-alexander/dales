@@ -24,7 +24,7 @@ program test_farquhar_leaf
   do i = 0, 8
     apar = 50. * i
     ci   = 0.7 * ca
-    call farquhar_leaf(tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
+    call farquhar_leaf(tleaf, tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
     resid = ci - (ca - an * pres * (1.4*gs + 1.6*gb_mol) / (gb_mol*gs))
     print '(f10.1, f10.3, f10.4, f9.3, es14.3)', apar, an, gs*1.e-6, ci/ca, resid
   end do
@@ -36,7 +36,7 @@ program test_farquhar_leaf
     esat  = 0.611e3 * exp(17.2694 * (tleaf - 273.16) / (tleaf - 35.86))
     eair  = esat - 1000.
     ci    = 0.7 * ca
-    call farquhar_leaf(tleaf, pres, ca, eair, 300., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
+    call farquhar_leaf(tleaf, tleaf, pres, ca, eair, 300., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
     print '(f10.1, f10.3, f10.4, f9.3)', tleaf - tfrz, an, gs*1.e-6, ci/ca
   end do
 
@@ -48,7 +48,7 @@ program test_farquhar_leaf
   do i = 1, 8
     ca = 100.e-6 * i * pres
     ci = 0.7 * ca
-    call farquhar_leaf(tleaf, pres, ca, eair, 300., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
+    call farquhar_leaf(tleaf, tleaf, pres, ca, eair, 300., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
     print '(f10.0, f10.3, f10.4, f10.1)', ca/pres*1.e6, an, gs*1.e-6, ci/pres*1.e6
   end do
 
@@ -58,7 +58,7 @@ program test_farquhar_leaf
   do i = 1, 6
     eair = esat - 500. * i
     ci   = 0.7 * ca
-    call farquhar_leaf(tleaf, pres, ca, eair, 300., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
+    call farquhar_leaf(tleaf, tleaf, pres, ca, eair, 300., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
     print '(f10.1, f10.3, f10.4, f9.3)', 0.5*i, an, gs*1.e-6, ci/ca
   end do
 
@@ -66,7 +66,7 @@ program test_farquhar_leaf
   do i = 0, 1
     tleaf = 20. + 10.*i + tfrz
     ci    = 0.7 * ca
-    call farquhar_leaf(tleaf, pres, ca, eair, 0., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
+    call farquhar_leaf(tleaf, tleaf, pres, ca, eair, 0., gb_mol, vcmax25, btran, ci, an, gs, ag, cp)
     print '(a,f5.1,a,f8.4,a,f8.4)', '  T = ', tleaf-tfrz, '  An = ', an, '  gs [mol] = ', gs*1.e-6
   end do
 
@@ -74,14 +74,14 @@ program test_farquhar_leaf
   ! DALES-like conditions in the canopy at 99000 Pa
   ci_d = -1.   ! not set yet: interface must fall back to 0.7 ca
   do i = 1, 3
-    call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 0.3, 100.*i, 0.05, vcmax25, &
+    call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 298., 0.3, 100.*i, 0.05, vcmax25, &
                         gcc, fleaf, ci_d, co2abs, cp_d, bt)
     ! flux as DALES computes it in leafco2f (transpiretype = 1)
     fleaf_check = -(co2abs - ci_d) / (1./gcc + 1.4/(1.075*0.05))
     print '(a,f6.0,a,es11.4,a,es11.4,a,f8.4,a,es10.3)', '  APAR=', 100.*i, '  Fleaf[mg/m2/s]=', fleaf, &
           '  leafco2f=', fleaf_check, '  gcc[m/s]=', gcc, '  ci[mg/m3]=', ci_d
   end do
-  call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 0.3, 0., 0.05, vcmax25, &
+  call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 298., 0.3, 0., 0.05, vcmax25, &
                       gcc, fleaf, ci_d, co2abs, cp_d, bt)
   fleaf_check = -(co2abs - ci_d) / (1./gcc + 1.4/(1.075*0.05))
   print '(a,es11.4,a,es11.4,a,f9.6,a,f8.2,a,f8.2)', '  night: Fleaf=', fleaf, '  leafco2f=', fleaf_check, &

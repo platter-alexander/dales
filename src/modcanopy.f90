@@ -81,6 +81,8 @@ module modcanopy
   integer, parameter :: ileafphys_ags = 1       !< leaf physiology: A-gs (Jacobs 1994 / Ronda 2001)
   integer, parameter :: ileafphys_farquhar = 2  !< leaf physiology: Farquhar et al. (1980) following CLM5
   integer  :: ileafphys    = ileafphys_ags  !< Switch for leaf physiology model in lcanopyeb (1 = A-gs, 2 = Farquhar)
+  logical  :: lags_tleaf   = .false.        !< A-gs in the canopy: temperature responses (Gamma, gm, Ammax) at leaf
+                                            !< temperature instead of air temperature (default: air, as in A-gs)
 
   real, allocatable :: absleaf_shad_b   (:,:,:,:) !< per-band SW absorbed at shaded leaves per canopy vertical level [W m-2 leaf]
   real, allocatable :: absSWleaf_shad   (:,:,:) !< total SW absorbed at shaded leaves per canopy vertical level [W m-2 leaf]
@@ -172,7 +174,7 @@ contains
                         wth_alph, wqt_alph, wsv_alph, &
                         lcanopyeb,lwidth,llength,transpiretype,leaf_eps,lclump,&
                         lrelaxgc_can,kgc_can,lrelaxci_can,kci_can,sw_canrad_meth,lcanradbands,&
-                        ileafphys
+                        ileafphys,lags_tleaf
 
 
     if(myid==0) then
@@ -301,6 +303,7 @@ contains
     call MPI_BCAST(kci_can      ,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(sw_canrad_meth  ,   1, mpi_integer , 0, comm3d, mpierr)
     call MPI_BCAST(ileafphys    ,   1, mpi_integer , 0, comm3d, mpierr)
+    call MPI_BCAST(lags_tleaf   ,   1, mpi_logical , 0, comm3d, mpierr)
 
     if (.not. (lcanopy)) return
 
@@ -1365,17 +1368,24 @@ subroutine leafphys(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
        real,    intent(out) :: gleaf,Fleaf
        real,    intent(inout) :: ci
        real,    intent(out) :: fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin
+       real                 :: ttemp   ! temperature for the A-gs temperature responses [K]
 
        select case (ileafphys)
        case (ileafphys_ags)
-          call f_Ags(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
+          ! the 4th argument of f_Ags is only used for its temperature responses
+          if (lags_tleaf) then
+            ttemp = t_skin     ! leaf temperature
+          else
+            ttemp = tairk      ! air temperature (A-gs default)
+          endif
+          call f_Ags(CO2air,qtair,dens,ttemp,pair,t_skin,          & ! in
                      phi_tot,Hleaf,                                & ! in
                      lrelaxgc,gc_old_set,kgc,gleaf_old,rk3coef,    & ! in
                      lrelaxci,ci_old_set,kci,ci_old,               & ! in
                      gleaf,Fleaf,ci,                               & ! out
                      fstr,Am,Rdark,alphac,co2abs,CO2comp,Ds,D0,fmin) ! out
        case (ileafphys_farquhar)
-          call farquhar_dales(CO2air,qtair,dens,pair,t_skin,phi_tot,Hleaf, & ! in
+          call farquhar_dales(CO2air,qtair,dens,pair,t_skin,tairk,phi_tot,Hleaf, & ! in
                               gb,vcmax25,                                & ! in
                               gleaf,Fleaf,ci,co2abs,CO2comp,fstr)          ! out (ci in/out)
           Am     = 0.

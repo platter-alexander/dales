@@ -24,6 +24,8 @@
 !!  - leaf boundary layer conductance comes from DALES (leafblc in modcanopy)
 !!  - conversion between mol m-2 s-1 and m s-1 uses the local DALES air density
 !!  - the ci solver is started from the previous value of ci (warm start)
+!!  - optional (lfq_tleaf = .false.): biochemistry at air instead of leaf temperature,
+!!    for comparison with A-gs, which uses the air temperature
 !!  - no LUNA, no plant hydraulics, C3 only
 !!
 !!  Internal units are those of CLM: umol m-2 s-1 for fluxes and conductances,
@@ -66,6 +68,8 @@ module modfarquhar
   real    :: rd_vcmax    = 0.015   !< Rd25 / Vcmax25 [-] (CLM5, C3)
   real    :: tpu_vcmax   = 0.167   !< TPU25 / Vcmax25 [-] (CLM5)
   real    :: rs_max      = 2.e4    !< Maximum stomatal resistance [s m-1] (CLM5)
+  logical :: lfq_tleaf   = .true.  !< Temperature of the biochemistry (kinetics, Vcmax, Jmax, TPU, Rd): leaf temperature
+                                   !< (.true., CLM5) or air temperature (.false.); the leaf VPD always uses leaf temperature
 
   ! ---- Constants (CLM5.0, PhotosynthesisMod.F90)
   real, parameter :: rgas      = 8.31447    !< Universal gas constant [J mol-1 K-1]
@@ -146,7 +150,7 @@ contains
     character(80) :: readstring
 
     namelist/NAMFARQUHAR/ ivcmax, vcmax25_top, kn_vcmax, t_growth, lrdinhib, &
-                          g0_medlyn, g1_medlyn, rd_vcmax, tpu_vcmax, rs_max
+                          g0_medlyn, g1_medlyn, rd_vcmax, tpu_vcmax, rs_max, lfq_tleaf
 
     if (myid==0) then
       open(ifnamopt,file=fname_options,status='old',iostat=ierr)
@@ -172,6 +176,7 @@ contains
     call MPI_BCAST(rd_vcmax    , 1, my_real    , 0, comm3d, mpierr)
     call MPI_BCAST(tpu_vcmax   , 1, my_real    , 0, comm3d, mpierr)
     call MPI_BCAST(rs_max      , 1, my_real    , 0, comm3d, mpierr)
+    call MPI_BCAST(lfq_tleaf   , 1, mpi_logical, 0, comm3d, mpierr)
 
     call farquhar_set_params
 
@@ -275,7 +280,7 @@ contains
 
   !> Interface to the DALES canopy: converts DALES units to CLM units, calls
   !! farquhar_leaf and converts the results back.
-  subroutine farquhar_dales(co2_ppb, qtair, dens, pres, tleaf, phi_tot, apar, &   ! in
+  subroutine farquhar_dales(co2_ppb, qtair, dens, pres, tleaf, tairk, phi_tot, apar, &   ! in
                             gb_heat, vcmax25,                                         & ! in
                             gcc, fleaf, ci_dales, co2abs, cp_dales, btran)              ! out (ci_dales in/out)
     use modsurfdata, only : phiwp, phifc, MW_CO2, MW_Air, nuco2q
@@ -285,6 +290,7 @@ contains
     real, intent(in)    :: dens      !< air density [kg m-3]
     real, intent(in)    :: pres      !< air pressure [Pa]
     real, intent(in)    :: tleaf     !< leaf temperature [K]
+    real, intent(in)    :: tairk     !< air temperature [K] (used for the biochemistry if .not. lfq_tleaf)
     real, intent(in)    :: phi_tot   !< soil water content [-]
     real, intent(in)    :: apar      !< absorbed PAR [W m-2 leaf]
     real, intent(in)    :: gb_heat   !< leaf boundary layer conductance for heat [m s-1]
@@ -296,7 +302,7 @@ contains
     real, intent(out)   :: cp_dales  !< CO2 compensation point Gamma* [mg m-3]
     real, intent(out)   :: btran     !< soil water stress factor [-]
 
-    real :: cf, ca, eair, gb_mol, ci, an, gs_mol, ag, cp, ppm2mg
+    real :: cf, ca, eair, gb_mol, ci, an, gs_mol, ag, cp, ppm2mg, tbio
 
     ! molar density of air [umol m-3], converts m s-1 to umol m-2 s-1. Taken from the
     ! DALES density (CLM: P/(R T)) so that it matches the ppb <-> mg m-3 conversion.
@@ -311,7 +317,13 @@ contains
     ci = ci_dales / ppm2mg * 1.e-6 * pres        ! [Pa]
     if (.not. (ci > 0. .and. ci < 2.*ca)) ci = 0.7 * ca
 
-    call farquhar_leaf(tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, & ! in
+    if (lfq_tleaf) then
+      tbio = tleaf
+    else
+      tbio = tairk
+    endif
+
+    call farquhar_leaf(tbio, tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, & ! in
                        ci, an, gs_mol, ag, cp)                                ! out (ci in/out)
 
     gs_mol   = max(gs_mol, cf / rs_max)                       ! CLM5: rs <= rs_max
@@ -327,10 +339,11 @@ contains
   end subroutine farquhar_dales
 
   !> Leaf photosynthesis and stomatal conductance (CLM5 units).
-  subroutine farquhar_leaf(tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, & ! in
+  subroutine farquhar_leaf(tbio, tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, & ! in
                            ci, an, gs_mol, ag, cp)                                ! out (ci in/out)
     implicit none
-    real, intent(in)    :: tleaf    !< leaf temperature [K]
+    real, intent(in)    :: tbio     !< temperature of the biochemistry [K] (leaf temperature in CLM5)
+    real, intent(in)    :: tleaf    !< leaf temperature [K], for the leaf vapour pressure deficit
     real, intent(in)    :: pres     !< air pressure [Pa]
     real, intent(in)    :: ca       !< CO2 partial pressure in air [Pa]
     real, intent(in)    :: eair     !< vapour pressure of air [Pa]
@@ -351,16 +364,16 @@ contains
     le%pres = pres
     le%ca   = ca
     le%oair = o2_frac * pres
-    le%kc   = kc25_frac * pres * ft(tleaf, kcha)
-    le%ko   = ko25_frac * pres * ft(tleaf, koha)
-    le%cp   = cp25_frac * pres * ft(tleaf, cpha)
+    le%kc   = kc25_frac * pres * ft(tbio, kcha)
+    le%ko   = ko25_frac * pres * ft(tbio, koha)
+    le%cp   = cp25_frac * pres * ft(tbio, cpha)
     cp      = le%cp
 
     ! capacities at leaf temperature; water stress on Vcmax and Rd as in CLM5
-    le%vcmax    = vcmax25 * btran * ft(tleaf, vcmaxha) * fth(tleaf, vcmaxhd, vcmaxse, vcmaxc)
-    le%jmax_pot = jmax_vcmax * vcmax25 * ft(tleaf, jmaxha) * fth(tleaf, jmaxhd, jmaxse, jmaxc)
-    le%tpu      = tpu_vcmax  * vcmax25 * ft(tleaf, tpuha)  * fth(tleaf, tpuhd,  tpuse,  tpuc)
-    le%rd       = rd_vcmax   * vcmax25 * btran * ft(tleaf, lmrha) * fth(tleaf, lmrhd, lmrse, lmrc)
+    le%vcmax    = vcmax25 * btran * ft(tbio, vcmaxha) * fth(tbio, vcmaxhd, vcmaxse, vcmaxc)
+    le%jmax_pot = jmax_vcmax * vcmax25 * ft(tbio, jmaxha) * fth(tbio, jmaxhd, jmaxse, jmaxc)
+    le%tpu      = tpu_vcmax  * vcmax25 * ft(tbio, tpuha)  * fth(tbio, tpuhd,  tpuse,  tpuc)
+    le%rd       = rd_vcmax   * vcmax25 * btran * ft(tbio, lmrha) * fth(tbio, lmrhd, lmrse, lmrc)
 
     le%gb_mol = gb_mol
     esat      = 0.611e3 * exp(17.2694 * (tleaf - 273.16) / (tleaf - 35.86))   ! as in f_Ags [Pa]
