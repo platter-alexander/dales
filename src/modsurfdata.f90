@@ -171,6 +171,7 @@ SAVE
   real              :: wsmin      =  0.005 !<  Lower reference value soil water
   real              :: R10        =   0.23 !<  Respiration at 10oC (Jacobs 2007)
   real              :: Eact0      = 53.3e3 !<  Activation energy
+  real              :: c_beta     =    0.0 !<  Shape of the soil-moisture stress function (Combe et al. 2016, as in CLASS); 0 = linear
   real              :: MW_Air     =  28.97 !<  Molecular weight of air
   real              :: MW_CO2     =     44 !<  Molecular weight of CO2
   real, allocatable :: wco2Field    (:,:)
@@ -352,6 +353,26 @@ SAVE
 
 
 contains
+
+real function fbeta_shape(betaw)
+! Soil-moisture stress factor from the linear water-availability index betaw [-].
+! c_beta = 0 returns betaw itself (DALES default); c_beta > 0 uses the curvature of
+! Combe et al. (2016), as in CLASS: fstr = (1 - exp(-P betaw)) / (1 - exp(-P)).
+    real, intent(in) :: betaw
+    real :: P
+    if (c_beta <= 0.) then
+      fbeta_shape = betaw
+    else
+      if (c_beta < 0.25) then
+        P = 6.4 * c_beta
+      else if (c_beta < 0.50) then
+        P = 7.6 * c_beta - 0.3
+      else
+        P = 2.**(3.66 * c_beta + 0.34) - 1.
+      endif
+      fbeta_shape = (1. - exp(-P * betaw)) / (1. - exp(-P))
+    endif
+end function fbeta_shape
 
 function rho_c_dif(sigma)
     real :: rho_c_dif
@@ -851,7 +872,7 @@ subroutine f_Ags(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
       betaw    = max(1.0e-3,min(1.0,(phi_tot-phiwp)/(phifc-phiwp)))
 
       ! Calculate stress function
-      fstr     = betaw
+      fstr     = fbeta_shape(betaw)
 
       ! Calculate gross assimilation rate (Am)
       Am       = Ammax * (1 - exp( -(gm * (ci - CO2comp) / Ammax) ) )

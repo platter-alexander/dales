@@ -283,7 +283,7 @@ contains
   subroutine farquhar_dales(co2_ppb, qtair, dens, pres, tleaf, tairk, phi_tot, apar, &   ! in
                             gb_heat, vcmax25,                                         & ! in
                             gcc, fleaf, ci_dales, co2abs, cp_dales, btran)              ! out (ci_dales in/out)
-    use modsurfdata, only : phiwp, phifc, MW_CO2, MW_Air, nuco2q
+    use modsurfdata, only : phiwp, phifc, MW_CO2, MW_Air, nuco2q, fbeta_shape
     implicit none
     real, intent(in)    :: co2_ppb   !< CO2 in air [ppb]
     real, intent(in)    :: qtair     !< specific humidity of air [kg kg-1]
@@ -311,7 +311,7 @@ contains
     ca      = co2_ppb * 1.e-9 * pres             ! [Pa]
     eair    = qtair * pres / 0.622               ! [Pa], as in f_Ags
     gb_mol  = 1.075 * gb_heat * cf               ! H2O, 1.075 as in modcanopy (Goudriaan and van Laar 1994)
-    btran   = max(1.0e-3, min(1.0, (phi_tot-phiwp)/(phifc-phiwp)))   ! as in f_Ags
+    btran   = fbeta_shape(max(1.0e-3, min(1.0, (phi_tot-phiwp)/(phifc-phiwp))))   ! as in f_Ags
 
     ! warm start: previous ci if it is a sensible number (it is not set at the first call)
     ci = ci_dales / ppm2mg * 1.e-6 * pres        ! [Pa]

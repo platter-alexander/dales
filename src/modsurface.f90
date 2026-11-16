@@ -99,7 +99,13 @@ contains
       ! Soil properties
       phi, phifc, phiwp, R10, &
       !2leaf AGS, sunlit/shaded
-      lsplitleaf,l3leaves,surfrad_meth
+      lsplitleaf,l3leaves,surfrad_meth, &
+      ! A-gs plant physiology parameters (surface and canopy leaves; defaults in modsurfdata,
+      ! C4 defaults for planttype=4 are applied before the values given here)
+      CO2comp298, Q10CO2, gm298, Q10gm, T1gm, T2gm, gmin, f0, ad, Ammax298, Q10am, T1Am, T2Am, &
+      alpha0, Kx, c_beta, &
+      ! soil respiration
+      Cw, wsmax, wsmin, Eact0
 
 
     ! 1    -   Initialize soil
@@ -115,6 +121,27 @@ contains
         print *, 'Problem in namoptions NAMSURFACE'
         print *, 'iostat error: ', ierr
         stop 'ERROR: Problem in namoptions NAMSURFACE'
+      endif
+      if (lrsAgs .and. planttype==4) then
+        ! C4 defaults replace the C3 defaults; read the namelist again so that
+        ! A-gs parameters given in NAMSURFACE override the C4 defaults
+        CO2comp298 =    4.3 !<  CO2 compensation concentration
+        Q10CO2     =    1.5 !<  Parameter to calculate the CO2 compensation concentration
+        gm298      =   17.5 !<  Mesophyll conductance at 298 K
+        Q10gm      =    2.0 !<  Parameter to calculate the mesophyll conductance
+        T1gm       =  286.0 !<  Reference temperature to calculate the mesophyll conductance
+        T2gm       =  309.0 !<  Reference temperature to calculate the mesophyll conductance
+        f0         =   0.85 !<  Maximum value Cfrac
+        ad         =   0.15 !<  Regression coefficient to calculate Cfrac
+        Ammax298   =    1.7 !<  CO2 maximal primary productivity
+        Q10am      =    2.0 !<  Parameter to calculate maximal primary productivity
+        T1Am       =    286 !<  Reference temperature to calculate maximal primary productivity
+        T2Am       =    311 !<  Reference temperature to calculate maximal primary productivity
+        alpha0     =  0.014 !<  Initial low light conditions
+        rewind(ifnamopt)
+        read (ifnamopt,NAMSURFACE,iostat=ierr)
+      else if (lrsAgs .and. planttype/=3) then
+        print *,"WARNING::: planttype should be either 3 or 4, corresponding to C3 or C4 plants. It now defaulted to 3."
       endif
       write(6 ,NAMSURFACE)
       close(ifnamopt)
@@ -167,6 +194,26 @@ contains
     call MPI_BCAST(phifc                      ,            1, MY_REAL    , 0, comm3d, mpierr)
     call MPI_BCAST(phiwp                      ,            1, MY_REAL    , 0, comm3d, mpierr)
     call MPI_BCAST(R10                        ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(CO2comp298                 ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Q10CO2                     ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(gm298                      ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Q10gm                      ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(T1gm                       ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(T2gm                       ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(gmin                       ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(f0                         ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(ad                         ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Ammax298                   ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Q10am                      ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(T1Am                       ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(T2Am                       ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(alpha0                     ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Kx                         ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(c_beta                     ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Cw                         ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(wsmax                      ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(wsmin                      ,            1, MY_REAL    , 0, comm3d, mpierr)
+    call MPI_BCAST(Eact0                      ,            1, MY_REAL    , 0, comm3d, mpierr)
     call MPI_BCAST(lsplitleaf                 ,            1, MPI_LOGICAL, 0, comm3d, mpierr)
     call MPI_BCAST(l3leaves                   ,            1, MPI_LOGICAL, 0, comm3d, mpierr)
     call MPI_BCAST(surfrad_meth                ,            1, MPI_INTEGER, 0, comm3d, mpierr)
@@ -181,28 +228,6 @@ contains
     if(lsplitleaf .and. (.not. (rad_shortw .and. ((iradiation.eq.irad_par).or.(iradiation .eq. irad_user) .or. (iradiation .eq. irad_rrtmg))))) then
       if(myid==0) stop "WARNING::: You set lsplitleaf to .true., but that needs direct and diffuse calculations. Make sure you enable rad_shortw and choose right iradiation"
       lsplitleaf = .false.
-    endif
-
-    if(lrsAgs) then
-      if(planttype==4) then !C4 plants, so standard settings for C3 plants are replaced
-        CO2comp298 =    4.3 !<  CO2 compensation concentration
-        Q10CO2     =    1.5 !<  Parameter to calculate the CO2 compensation concentration
-        gm298      =   17.5 !<  Mesophyll conductance at 298 K
-        Q10gm      =    2.0 !<  Parameter to calculate the mesophyll conductance
-        T1gm       =  286.0 !<  Reference temperature to calculate the mesophyll conductance
-        T2gm       =  309.0 !<  Reference temperature to calculate the mesophyll conductance
-        f0         =   0.85 !<  Maximum value Cfrac
-        ad         =   0.15 !<  Regression coefficient to calculate Cfrac
-        Ammax298   =    1.7 !<  CO2 maximal primary productivity
-        Q10am      =    2.0 !<  Parameter to calculate maximal primary productivity
-        T1Am       =    286 !<  Reference temperature to calculate maximal primary productivity
-        T2Am       =    311 !<  Reference temperature to calculate maximal primary productivity
-        alpha0     =  0.014 !<  Initial low light conditions
-      else
-        if(planttype/=3) then
-          if(myid==0) print *,"WARNING::: planttype should be either 3 or 4, corresponding to C3 or C4 plants. It now defaulted to 3."
-        endif
-      endif
     endif
 
     if(lhetero) then
