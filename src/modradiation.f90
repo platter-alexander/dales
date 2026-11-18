@@ -201,18 +201,24 @@ contains
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   subroutine radiation
-    use modglobal, only : timee, dt, dt_lim,rk3step
+    use modglobal, only : timee, dt, dt_lim, rk3step, btime
     use modfields, only : thlp,thl0
     use moduser,   only : rad_user
     use modradfull,only : radfull
     use modradrrtmg, only : radrrtmg
     implicit none
 
+    ! warm start: initradiation runs before the restart files are read, so tnext was set
+    ! with btime = 0 and would never be reached; shift it to after the restart time
+    if (tnext <= btime) tnext = tnext + btime
+
     if(timee<tnext .and. rk3step==3) then
       dt_lim = min(dt_lim,tnext-timee)
     end if
 
-    if(((itimerad==0 .or. timee==tnext) .and. rk3step==1) .or. (timee==dt)) then
+    ! (timee == btime+dt): radiation in the first time step, also after a warm start
+    ! (the radiation fields are not in the restart files)
+    if(((itimerad==0 .or. timee==tnext) .and. rk3step==1) .or. (timee==btime+dt)) then
       if (timee == tnext) tnext = tnext+itimerad
 
       thlprad = 0.0

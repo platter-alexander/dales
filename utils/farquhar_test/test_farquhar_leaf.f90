@@ -3,6 +3,7 @@
 program test_farquhar_leaf
   use modfarquhar, only : farquhar_set_params, farquhar_leaf, farquhar_dales
   implicit none
+  real :: gcc_lag
 
   real, parameter :: pres = 101325., tfrz = 273.15
   real, parameter :: vcmax25 = 41., btran = 1.
@@ -75,16 +76,33 @@ program test_farquhar_leaf
   ci_d = -1.   ! not set yet: interface must fall back to 0.7 ca
   do i = 1, 3
     call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 298., 0.3, 100.*i, 0.05, vcmax25, &
-                        gcc, fleaf, ci_d, co2abs, cp_d, bt)
+                        .false., 0., 0., 0., 0., gcc, fleaf, ci_d, co2abs, cp_d, bt)
     ! flux as DALES computes it in leafco2f (transpiretype = 1)
     fleaf_check = -(co2abs - ci_d) / (1./gcc + 1.4/(1.075*0.05))
     print '(a,f6.0,a,es11.4,a,es11.4,a,f8.4,a,es10.3)', '  APAR=', 100.*i, '  Fleaf[mg/m2/s]=', fleaf, &
           '  leafco2f=', fleaf_check, '  gcc[m/s]=', gcc, '  ci[mg/m3]=', ci_d
   end do
   call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 298., 0.3, 0., 0.05, vcmax25, &
-                      gcc, fleaf, ci_d, co2abs, cp_d, bt)
+                      .false., 0., 0., 0., 0., gcc, fleaf, ci_d, co2abs, cp_d, bt)
   fleaf_check = -(co2abs - ci_d) / (1./gcc + 1.4/(1.075*0.05))
   print '(a,es11.4,a,es11.4,a,f9.6,a,f8.2,a,f8.2)', '  night: Fleaf=', fleaf, '  leafco2f=', fleaf_check, &
         '  gcc=', gcc, '  ci=', ci_d, '  ca=', co2abs
+
+  ! stomatal lag: start from the night conductance, switch the light on (APAR 300 W m-2),
+  ! relax with 60 s steps and a 14.75 min time scale; the flux must stay consistent with
+  ! diffusion through the lagged gs (Fleaf = leafco2f) and gs must approach the steady state
+  print *, 'stomatal lag (APAR 300, k = 1.13e-3 s-1, dt = 60 s):'
+  gcc_lag = gcc
+  do i = 0, 60
+    call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 298., 0.3, 300., 0.05, vcmax25, &
+                        .true., gcc_lag, 60., 1.13e-3, 1.13e-3, gcc, fleaf, ci_d, co2abs, cp_d, bt)
+    fleaf_check = -(co2abs - ci_d) / (1./gcc + 1.4/(1.075*0.05))
+    if (mod(i,10) == 0) print '(a,i4,a,f9.6,a,es11.4,a,es11.4,a,f8.2)', '  t[min]=', i, '  gcc=', gcc, &
+          '  Fleaf=', fleaf, '  leafco2f=', fleaf_check, '  ci=', ci_d
+    gcc_lag = gcc
+  end do
+  call farquhar_dales(410.e3, 0.015, 1.15, 99000., 299., 298., 0.3, 300., 0.05, vcmax25, &
+                      .false., 0., 0., 0., 0., gcc, fleaf, ci_d, co2abs, cp_d, bt)
+  print '(a,f9.6,a,es11.4)', '  steady state: gcc=', gcc, '  Fleaf=', fleaf
 
 end program test_farquhar_leaf

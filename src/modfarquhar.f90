@@ -62,7 +62,12 @@ module modfarquhar
   real    :: vcmax25_top = 41.     !< Vcmax at 25 degC at canopy top [umol m-2 s-1] (ivcmax = 1)
   real    :: kn_vcmax    = -1.     !< Decay coefficient of Vcmax25 with plant area above [-]; < 0: CLM5 formula (ivcmax = 1)
   real    :: t_growth    = 25.     !< Growth temperature for acclimation [degC] (CLM5: 10-day mean air temperature)
-  logical :: lrdinhib    = .true.  !< Light inhibition of leaf dark respiration (Rd x 0.67 in light), as CLM5
+  logical :: lrdinhib    = .true.  !< Light inhibition of leaf dark respiration (Kok effect), see rdinhib_min and par_kok
+  real    :: rdinhib_min = 0.67    !< Rd in strong light / Rd in the dark [-] (CLM5 light_inhibit: 0.67)
+  real    :: par_kok     = 25.     !< Light scale of the Rd inhibition [umol photons m-2 leaf s-1, absorbed PAR]:
+                                   !< Rd_light = Rd [rdinhib_min + (1 - rdinhib_min) exp(-PAR/par_kok)];
+                                   !< par_kok <= 0: step to rdinhib_min as soon as the leaf is lit (CLM5)
+  logical :: lrd_btran   = .true.  !< Soil water stress factor btran also scales Rd (CLM5)
   real    :: g0_medlyn   = 100.    !< Medlyn intercept [umol H2O m-2 s-1] (CLM5)
   real    :: g1_medlyn   = 4.12    !< Medlyn slope [kPa^0.5] (CLM5, broadleaf evergreen tropical tree)
   real    :: rd_vcmax    = 0.015   !< Rd25 / Vcmax25 [-] (CLM5, C3)
@@ -95,7 +100,6 @@ module modfarquhar
   real, parameter :: theta_psii = 0.7       !< Curvature of electron transport light response [-]
   real, parameter :: theta_cj  = 0.98       !< Co-limitation Wc - Wj, C3 [-]
   real, parameter :: theta_ip  = 0.95       !< Co-limitation Ai - Wp [-]
-  real, parameter :: rdinhib_fac = 0.67     !< Factor on Rd in light (CLM5 light_inhibit)
   real, parameter :: j_to_umol = 4.6        !< PAR energy to photons [umol J-1]
   real, parameter :: vpd_min   = 50.        !< Minimum vapour pressure deficit [Pa]
 
@@ -130,6 +134,7 @@ module modfarquhar
     real :: ca, pres                   !< CO2 partial pressure in air, air pressure [Pa]
     real :: gb_mol                     !< boundary layer conductance for H2O [umol m-2 s-1]
     real :: vpd_kpa                    !< vapour pressure deficit leaf - air [kPa]
+    real :: gs_fix = 0.                !< prescribed (lagged) gs for H2O [umol m-2 s-1]; 0: Medlyn steady state
   end type leafenv
 
 contains
@@ -149,7 +154,7 @@ contains
     real, allocatable :: zin(:), vcin(:), tin(:)
     character(80) :: readstring
 
-    namelist/NAMFARQUHAR/ ivcmax, vcmax25_top, kn_vcmax, t_growth, lrdinhib, &
+    namelist/NAMFARQUHAR/ ivcmax, vcmax25_top, kn_vcmax, t_growth, lrdinhib, rdinhib_min, par_kok, lrd_btran, &
                           g0_medlyn, g1_medlyn, rd_vcmax, tpu_vcmax, rs_max, lfq_tleaf
 
     if (myid==0) then
@@ -171,6 +176,9 @@ contains
     call MPI_BCAST(kn_vcmax    , 1, my_real    , 0, comm3d, mpierr)
     call MPI_BCAST(t_growth    , 1, my_real    , 0, comm3d, mpierr)
     call MPI_BCAST(lrdinhib    , 1, mpi_logical, 0, comm3d, mpierr)
+    call MPI_BCAST(rdinhib_min , 1, my_real    , 0, comm3d, mpierr)
+    call MPI_BCAST(par_kok     , 1, my_real    , 0, comm3d, mpierr)
+    call MPI_BCAST(lrd_btran   , 1, mpi_logical, 0, comm3d, mpierr)
     call MPI_BCAST(g0_medlyn   , 1, my_real    , 0, comm3d, mpierr)
     call MPI_BCAST(g1_medlyn   , 1, my_real    , 0, comm3d, mpierr)
     call MPI_BCAST(rd_vcmax    , 1, my_real    , 0, comm3d, mpierr)
@@ -282,6 +290,7 @@ contains
   !! farquhar_leaf and converts the results back.
   subroutine farquhar_dales(co2_ppb, qtair, dens, pres, tleaf, tairk, phi_tot, apar, &   ! in
                             gb_heat, vcmax25,                                         & ! in
+                            llag, gcc_old, dt_lag, k_open, k_close,                   & ! in (stomatal lag)
                             gcc, fleaf, ci_dales, co2abs, cp_dales, btran)              ! out (ci_dales in/out)
     use modsurfdata, only : phiwp, phifc, MW_CO2, MW_Air, nuco2q, fbeta_shape
     implicit none
@@ -295,6 +304,11 @@ contains
     real, intent(in)    :: apar      !< absorbed PAR [W m-2 leaf]
     real, intent(in)    :: gb_heat   !< leaf boundary layer conductance for heat [m s-1]
     real, intent(in)    :: vcmax25   !< Vcmax at 25 degC of this level [umol m-2 s-1]
+    logical, intent(in) :: llag      !< stomatal lag: gs relaxes from gcc_old towards the Medlyn steady state
+    real, intent(in)    :: gcc_old   !< stomatal conductance for CO2 at the previous time step [m s-1]
+    real, intent(in)    :: dt_lag    !< time since gcc_old [s] (rk3coef)
+    real, intent(in)    :: k_open    !< relaxation rate when gs increases (opening) [s-1]
+    real, intent(in)    :: k_close   !< relaxation rate when gs decreases (closing) [s-1]
     real, intent(out)   :: gcc       !< stomatal conductance for CO2 [m s-1]
     real, intent(out)   :: fleaf     !< net CO2 flux, negative = uptake [mg CO2 m-2 s-1]
     real, intent(inout) :: ci_dales  !< internal CO2 [mg m-3]; in: previous value (warm start)
@@ -302,7 +316,7 @@ contains
     real, intent(out)   :: cp_dales  !< CO2 compensation point Gamma* [mg m-3]
     real, intent(out)   :: btran     !< soil water stress factor [-]
 
-    real :: cf, ca, eair, gb_mol, ci, an, gs_mol, ag, cp, ppm2mg, tbio
+    real :: cf, ca, eair, gb_mol, ci, an, gs_mol, ag, cp, ppm2mg, tbio, gs_old, frac
 
     ! molar density of air [umol m-3], converts m s-1 to umol m-2 s-1. Taken from the
     ! DALES density (CLM: P/(R T)) so that it matches the ppb <-> mg m-3 conversion.
@@ -327,6 +341,20 @@ contains
                        ci, an, gs_mol, ag, cp)                                ! out (ci in/out)
 
     gs_mol   = max(gs_mol, cf / rs_max)                       ! CLM5: rs <= rs_max
+
+    ! stomatal lag: first-order relaxation of gs towards the steady state gs_mol, with
+    ! separate rates for opening and closing; An and ci are then solved for this gs
+    if (llag) then
+      gs_old = gcc_old * nuco2q * cf
+      if (gs_mol > gs_old) then
+        frac = 1. - exp(-k_open  * dt_lag)
+      else
+        frac = 1. - exp(-k_close * dt_lag)
+      endif
+      gs_mol = gs_old + frac * (gs_mol - gs_old)
+      call farquhar_leaf(tbio, tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, & ! in
+                         ci, an, gs_old, ag, cp, gs_fix=gs_mol)                   ! out (ci in/out)
+    endif
     ci       = ca - an * pres * (1.4*gs_mol + 1.6*gb_mol) / (gb_mol*gs_mol)
     ci       = max(ci, 1.e-6)
 
@@ -340,7 +368,7 @@ contains
 
   !> Leaf photosynthesis and stomatal conductance (CLM5 units).
   subroutine farquhar_leaf(tbio, tleaf, pres, ca, eair, apar, gb_mol, vcmax25, btran, & ! in
-                           ci, an, gs_mol, ag, cp)                                ! out (ci in/out)
+                           ci, an, gs_mol, ag, cp, gs_fix)                        ! out (ci in/out)
     implicit none
     real, intent(in)    :: tbio     !< temperature of the biochemistry [K] (leaf temperature in CLM5)
     real, intent(in)    :: tleaf    !< leaf temperature [K], for the leaf vapour pressure deficit
@@ -356,6 +384,7 @@ contains
     real, intent(out)   :: gs_mol   !< stomatal conductance for H2O [umol m-2 s-1]
     real, intent(out)   :: ag       !< gross assimilation [umol CO2 m-2 s-1]
     real, intent(out)   :: cp       !< CO2 compensation point Gamma* [Pa]
+    real, intent(in), optional :: gs_fix !< prescribed gs for H2O [umol m-2 s-1] (stomatal lag); absent: Medlyn
 
     type(leafenv) :: le
     real :: qabs, r1, r2, esat, fval
@@ -373,9 +402,12 @@ contains
     le%vcmax    = vcmax25 * btran * ft(tbio, vcmaxha) * fth(tbio, vcmaxhd, vcmaxse, vcmaxc)
     le%jmax_pot = jmax_vcmax * vcmax25 * ft(tbio, jmaxha) * fth(tbio, jmaxhd, jmaxse, jmaxc)
     le%tpu      = tpu_vcmax  * vcmax25 * ft(tbio, tpuha)  * fth(tbio, tpuhd,  tpuse,  tpuc)
-    le%rd       = rd_vcmax   * vcmax25 * btran * ft(tbio, lmrha) * fth(tbio, lmrhd, lmrse, lmrc)
+    le%rd       = rd_vcmax   * vcmax25 * ft(tbio, lmrha) * fth(tbio, lmrhd, lmrse, lmrc)
+    if (lrd_btran) le%rd = btran * le%rd
 
     le%gb_mol = gb_mol
+    le%gs_fix = 0.
+    if (present(gs_fix)) le%gs_fix = gs_fix
     esat      = 0.611e3 * exp(17.2694 * (tleaf - 273.16) / (tleaf - 35.86))   ! as in f_Ags [Pa]
     le%vpd_kpa = max(esat - min(eair, esat), vpd_min) * 1.e-3
 
@@ -384,11 +416,19 @@ contains
       ag     = 0.
       an     = -le%rd
       gs_mol = g0_medlyn
+      if (le%gs_fix > 0.) gs_mol = le%gs_fix
       fq_lim = 0
       return
     endif
 
-    if (lrdinhib) le%rd = rdinhib_fac * le%rd
+    ! light inhibition of Rd (Kok effect): smooth decrease from the dark value to rdinhib_min * Rd
+    if (lrdinhib) then
+      if (par_kok > 0.) then
+        le%rd = le%rd * (rdinhib_min + (1. - rdinhib_min) * exp(-apar * j_to_umol / par_kok))
+      else
+        le%rd = le%rd * rdinhib_min
+      endif
+    endif
 
     ! electron transport: smaller root of theta J^2 - (I + Jmax) J + I Jmax = 0
     qabs = 0.5 * (1. - fnps) * apar * j_to_umol
@@ -432,6 +472,13 @@ contains
       fq_lim = 1
     else
       fq_lim = 2
+    endif
+
+    if (le%gs_fix > 0.) then
+      ! prescribed (lagged) gs: only the diffusion constraint, also for An < 0
+      gs_mol = le%gs_fix
+      fval   = ci - le%ca + an * le%pres * (1.4 * gs_mol + 1.6 * le%gb_mol) / (le%gb_mol * gs_mol)
+      return
     endif
 
     if (an < 0.) then

@@ -71,6 +71,8 @@ module modcanopy
   !real     :: lthick       = 0.001     !< average leaf thickness[m]
   logical  :: lrelaxgc_can = .false.   !< Switch to delay plant response at canopy.Timescale is equal to 1/kgc_can
   real     :: kgc_can      = 0.00113   !< Standard stomatal response rate at canopy (corresponding to a time scale of 14.75 m min.) [1/s]
+  real     :: kgc_open_can  = -1.      !< Farquhar only: stomatal opening rate [1/s] (gs below its steady state); < 0: kgc_can
+  real     :: kgc_close_can = -1.      !< Farquhar only: stomatal closing rate [1/s] (gs above its steady state); < 0: kgc_can
   logical  :: gccan_old_set = .false.  !< Only apply relaxing function to canopy after initial gc is calculated once for surface
   logical  :: lrelaxci_can = .false.   !< Switch to delay internal CO2 concentration in canopy leafs.Timescale is equal to 1/kgc_can
   real     :: kci_can      = 0.00113   !< Standard internal CO2 concentration response rate at canopy (corresponding to a time scale of 14.75 m min.) [1/s]
@@ -157,7 +159,7 @@ contains
 !-----------------------------------------------------------------------------------------
   SUBROUTINE initcanopy
     use modmpi,      only : myid, mpi_logical, mpi_integer, my_real, comm3d, mpierr
-    use modglobal,   only : kmax, ifnamopt, fname_options, ifinput, cexpnr, zh, dzh, dzf,ih,i1,jh,j1,i2,j2,dzh
+    use modglobal,   only : kmax, ifnamopt, fname_options, ifinput, cexpnr, zh, dzh, dzf,ih,i1,jh,j1,i2,j2,lwarmstart
     use modsurfdata, only : nangle_gauss,ldiscr,lsplitleaf,l3leaves, canrad_band, canrad_bands_sw, n_bands_sw, albedoav_surf
     use modfields,   only : tmp0
     use modraddata,  only : kmin
@@ -174,7 +176,7 @@ contains
                         wth_alph, wqt_alph, wsv_alph, &
                         lcanopyeb,lwidth,llength,transpiretype,leaf_eps,lclump,&
                         lrelaxgc_can,kgc_can,lrelaxci_can,kci_can,sw_canrad_meth,lcanradbands,&
-                        ileafphys,lags_tleaf
+                        ileafphys,lags_tleaf,kgc_open_can,kgc_close_can
 
 
     if(myid==0) then
@@ -194,9 +196,11 @@ contains
         print *, 'ileafphys = ', ileafphys
         stop 'ERROR: ileafphys in NAMCANOPY must be 1 (A-gs) or 2 (Farquhar)'
       endif
-      if (ileafphys == ileafphys_farquhar .and. (lrelaxgc_can .or. lrelaxci_can)) then
-        stop 'ERROR: lrelaxgc_can / lrelaxci_can are not available with ileafphys = 2 (Farquhar)'
+      if (ileafphys == ileafphys_farquhar .and. lrelaxci_can) then
+        stop 'ERROR: lrelaxci_can is not available with ileafphys = 2 (Farquhar): ci follows from the lagged gs'
       endif
+      if (kgc_open_can  < 0.) kgc_open_can  = kgc_can
+      if (kgc_close_can < 0.) kgc_close_can = kgc_can
     endif
 
     if(lsplitleaf .and. lcanopyeb) then
@@ -299,6 +303,8 @@ contains
     call MPI_BCAST(lclump       ,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(lrelaxgc_can ,   1, mpi_logical , 0, comm3d, mpierr)
     call MPI_BCAST(kgc_can      ,   1, my_real     , 0, comm3d, mpierr)
+    call MPI_BCAST(kgc_open_can ,   1, my_real     , 0, comm3d, mpierr)
+    call MPI_BCAST(kgc_close_can,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(lrelaxci_can ,   1, mpi_logical , 0, comm3d, mpierr)
     call MPI_BCAST(kci_can      ,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(sw_canrad_meth  ,   1, mpi_integer , 0, comm3d, mpierr)
@@ -509,9 +515,50 @@ contains
       t_leafsun_old(:,:,k)  = tmp0(:,:,k)
       t_leafshad_old(:,:,k) = tmp0(:,:,k)
     enddo
+
+    ! warm start: leaf state of the canopy energy balance from the restart file
+    if (lwarmstart .and. lcanopyeb) call readcanopyrestart
+
     return
 
   end subroutine initcanopy
+
+  !> Leaf state needed to continue the canopy energy balance exactly after a warm start:
+  !! leaf temperatures (canopy longwave), ci (start of the Farquhar solver), the stomatal
+  !! conductances of the previous time step (lags) and the lag switches.
+  subroutine writecanopyrestart(name)
+    use modglobal, only : ifoutput
+    implicit none
+    character(*), intent(in) :: name
+    if (.not. (lcanopy .and. lcanopyeb)) return
+    open  (ifoutput,file=name,form='unformatted',status='replace')
+    write (ifoutput) t_leafsun, t_leafshad, t_leafsun_old, t_leafshad_old
+    write (ifoutput) ci_leafsun, ci_leafshad, ci_leafsun_old, ci_leafshad_old
+    write (ifoutput) gcc_leafsun, gcc_leafshad, gcc_leafsun_old, gcc_leafshad_old
+    write (ifoutput) gccan_old_set, cican_old_set, tleaf_old_set
+    close (ifoutput)
+  end subroutine writecanopyrestart
+
+  subroutine readcanopyrestart
+    use modglobal, only : ifinput, startfile
+    use modmpi,    only : cmyid
+    implicit none
+    character(50) :: name
+    integer :: ierr
+    name = startfile
+    name(5:5)   = 'c'
+    name(13:20) = cmyid
+    open (ifinput,file=name,form='unformatted',status='old',iostat=ierr)
+    if (ierr /= 0) then
+      print *, 'Canopy restart file ', trim(name), ' not found'
+      stop 'ERROR: warm start with lcanopyeb needs the canopy restart file initc...'
+    endif
+    read (ifinput) t_leafsun, t_leafshad, t_leafsun_old, t_leafshad_old
+    read (ifinput) ci_leafsun, ci_leafshad, ci_leafsun_old, ci_leafshad_old
+    read (ifinput) gcc_leafsun, gcc_leafshad, gcc_leafsun_old, gcc_leafshad_old
+    read (ifinput) gccan_old_set, cican_old_set, tleaf_old_set
+    close (ifinput)
+  end subroutine readcanopyrestart
 
   subroutine canopy
     use modfields,   only : up,vp,wp,e12p,thlp,qtp,svp
@@ -663,7 +710,7 @@ contains
    ! Patton and have been adapted, modified or extended where needed.
    !                                                      Xabier Pedruzo, 2020
    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    use modglobal, only  : j1,i1,cp,rlv,rk3step,dzf,rhow,xtime,rtimee,timee,xday,xlat,xlon,boltz,dt,Rd,pref0
+    use modglobal, only  : j1,i1,cp,rlv,rk3step,dzf,rhow,xtime,rtimee,timee,xday,xlat,xlon,boltz,dt,Rd,pref0,btime
     use modsurfdata,only : phitot,weight_g,indCO2,l3leaves,nangle_gauss,MW_CO2,MW_Air, &
                            canopyrad_sw_N79,canopyrad_sw_GvL94,canopyrad_lw_N79,pCw,tskinm_surf,canrad_bands_sw,n_bands_sw
     use modfields, only  : rhof,qt0,exnf,u0,v0,presf,svm,tmp0
@@ -687,7 +734,7 @@ contains
    !                #############  SW  #################               !
     iLAI_can(:) = paih(1:ncanopy+1)
 
-    if (((itimerad==0 .or. timee==(tnext-itimerad)) .and. rk3step==1) .or. (timee==dt)) update_canrad = .true.
+    if (((itimerad==0 .or. timee==(tnext-itimerad)) .and. rk3step==1) .or. (timee==btime+dt)) update_canrad = .true.
 
 
     if (update_canrad) then
@@ -876,7 +923,7 @@ contains
             swu  (i,j,:ncanopy+1) = sum(swu_can(:ncanopy+1,:), dim=2)
           endif
           ! update longwave in time steps with radiation
-          if (((itimerad==0 .or. timee==(tnext-itimerad)) .and. rk3step==1) .or. (timee==dt)) then
+          if (((itimerad==0 .or. timee==(tnext-itimerad)) .and. rk3step==1) .or. (timee==btime+dt)) then
             lwd  (i,j,:ncanopy) = lwd_can(:ncanopy)
             lwu  (i,j,:ncanopy+1) = lwu_can(:ncanopy+1)
           endif
@@ -888,7 +935,7 @@ contains
             swu  (i,j,:ncanopy+1) = sum(swu_can(:ncanopy+1,:),dim=2)     !should be on
           endif
           ! update longwave in time steps with radiation
-          if (((itimerad==0 .or. timee==(tnext-itimerad)) .and. rk3step==1) .or. (timee==dt)) then
+          if (((itimerad==0 .or. timee==(tnext-itimerad)) .and. rk3step==1) .or. (timee==btime+dt)) then
             lwd  (i,j,:ncanopy) = -lwd_can(:ncanopy)
             lwu  (i,j,:ncanopy+1) = lwu_can(:ncanopy+1)  !should be on
           endif
@@ -1387,6 +1434,8 @@ subroutine leafphys(CO2air,qtair,dens,tairk,pair,t_skin,          & ! in
        case (ileafphys_farquhar)
           call farquhar_dales(CO2air,qtair,dens,pair,t_skin,tairk,phi_tot,Hleaf, & ! in
                               gb,vcmax25,                                & ! in
+                              lrelaxgc .and. gc_old_set, gleaf_old, rk3coef, & ! in (stomatal lag)
+                              kgc_open_can, kgc_close_can,               & ! in
                               gleaf,Fleaf,ci,co2abs,CO2comp,fstr)          ! out (ci in/out)
           Am     = 0.
           Rdark  = 0.

@@ -808,7 +808,7 @@ contains
   subroutine readrestartfiles
 
     use modsurfdata, only : ustar,thlflux,qtflux,svflux,dthldz,dqtdz,ps,thls,qts,thvs,oblav,&
-                           tsoil,phiw,tskin_surf,Wl,isurf,ksoilmax,Qnet,swdavn,swuavn,lwdavn,lwuavn,nradtime,&
+                           tsoil,phiw,tskin_surf,tskinm_surf,Wl,isurf,ksoilmax,Qnet,swdavn,swuavn,lwdavn,lwuavn,nradtime,&
                            obl,xpatches,ypatches,ps_patch,thls_patch,qts_patch,thvs_patch,oblpatch,lhetero,qskin_surf
     use modraddata, only: iradiation, useMcICA
     use modfields,  only : u0,v0,w0,thl0,qt0,ql0,ql0h,e120,dthvdz,presf,presh,sv0,tmp0,esl,qvsl,qvsi
@@ -888,6 +888,7 @@ contains
       read(ifinput) ((tskin_surf(i,j),i=1,i2),j=1,j2)
       read(ifinput) ((Wl(i,j),i=1,i2),j=1,j2)
       read(ifinput) ((Qnet(i,j),i=1,i2),j=1,j2)
+      read(ifinput) ((tskinm_surf(i,j),i=1,i2),j=1,j2)   ! skin temperature of the previous time step (used by A-gs before it is updated)
       if(iradiation == 1 .and. useMcICA) then
         read(ifinput) (((swdavn(i,j,n),i=1,i2),j=1,j2),n=1,nradtime)
         read(ifinput) (((swuavn(i,j,n),i=1,i2),j=1,j2),n=1,nradtime)
@@ -902,7 +903,7 @@ contains
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   subroutine writerestartfiles
     use modsurfdata,only: ustar,thlflux,qtflux,svflux,dthldz,dqtdz,ps,thls,qts,thvs,oblav,&
-                          tsoil,phiw,tskin_surf,Wl,ksoilmax,isurf,ksoilmax,Qnet,swdavn,swuavn,lwdavn,lwuavn,nradtime,&
+                          tsoil,phiw,tskin_surf,tskinm_surf,Wl,ksoilmax,isurf,ksoilmax,Qnet,swdavn,swuavn,lwdavn,lwuavn,nradtime,&
                           obl,xpatches,ypatches,ps_patch,thls_patch,qts_patch,thvs_patch,oblpatch,lhetero,qskin_surf
     use modraddata, only: iradiation, useMcICA
     use modfields, only : u0,v0,w0,thl0,qt0,ql0,ql0h,e120,dthvdz,presf,presh,sv0,tmp0,esl,qvsl,qvsi
@@ -910,6 +911,7 @@ contains
                           rtimee,rk3step,ifoutput,nsv,timeleft,dtheta,dqt,dt
     use modmpi,    only : cmyid,myid
     use modsubgriddata, only : ekm,ekh
+    use modcanopy,  only : writecanopyrestart
 
     implicit none
     integer imin,ihour
@@ -998,6 +1000,7 @@ contains
         write(ifoutput) ((tskin_surf(i,j),i=1,i2),j=1,j2)
         write(ifoutput) ((Wl(i,j),i=1,i2),j=1,j2)
         write(ifoutput) ((Qnet(i,j),i=1,i2),j=1,j2)
+        write(ifoutput) ((tskinm_surf(i,j),i=1,i2),j=1,j2)
         if(iradiation == 1 .and. useMcICA) then
           write(ifoutput) (((swdavn(i,j,n),i=1,i2),j=1,j2),n=1,nradtime)
           write(ifoutput) (((swuavn(i,j,n),i=1,i2),j=1,j2),n=1,nradtime)
@@ -1011,6 +1014,10 @@ contains
         linkname(6:11) = "latest"
         call system("cp "//name //" "//linkname)
       end if
+
+      ! canopy leaf state (only written with lcanopy and lcanopyeb)
+      name(5:5)='c'
+      call writecanopyrestart(name)
 
 
       if (myid==0) then
