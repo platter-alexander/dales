@@ -42,6 +42,7 @@ contains
     use modbulkmicro, only : initbulkmicro
     use modsimpleice, only : initsimpleice
     use modsimpleice2, only : initsimpleice2
+    use modsurfdata,  only : indCO2, lrsAgs
     implicit none
     integer :: ierr
     namelist/NAMMICROPHYSICS/ &
@@ -74,6 +75,15 @@ contains
     call MPI_BCAST(sig_g,    1, MY_REAL     ,0,comm3d,ierr)
     call MPI_BCAST(sig_gr,   1, MY_REAL     ,0,comm3d,ierr)
     call MPI_BCAST(courantp, 1, MY_REAL     ,0,comm3d,ierr)
+
+    ! CO2 for A-gs (surface and canopy): with bulk microphysics, scalars 1 and 2 are qr and Nr and CO2 is
+    ! scalar 3. modsurface chooses indCO2 in its first call (from readinitfiles), which comes before this
+    ! routine, so imicro was still 0 there and indCO2 = 1 was chosen. Correct it here.
+    if (imicro == imicro_bulk .and. lrsAgs .and. indCO2 < 3) then
+      if (nsv < 3) STOP "ERROR: bulk microphysics with A-gs needs nsv >= 3 (qr, Nr, CO2)"
+      indCO2 = 3
+      if (myid == 0) print *, 'initmicrophysics: bulk microphysics with A-gs, CO2 is scalar 3 (indCO2 = 3)'
+    end if
 
     select case (imicro)
     case(imicro_none)

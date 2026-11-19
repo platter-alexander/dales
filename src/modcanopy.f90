@@ -61,6 +61,8 @@ module modcanopy
   logical :: lcanopyeb     = .false.   !< Switch to enable canopy surface energy balance per vertical level
 
   real    :: leaf_eps      = 0.98      !< Emissivity of leaves in the LW
+  logical :: ldew_can      = .false.   !< allow dew (condensation onto the leaf surfaces, both sides, through the
+                                       !< leaf boundary layer only); .false. = no dew (original behaviour)
   real    :: transpiretype = 1.0       !< type of transpirer(1=hypostomatous, 2=amphistomatous,
                                        !< 1.25=hypostomatous with some transpiration through cuticle)
   real     :: lwidth       = 0.02      !< !leaf width/shoot diameter [m]
@@ -176,7 +178,7 @@ contains
                         wth_alph, wqt_alph, wsv_alph, &
                         lcanopyeb,lwidth,llength,transpiretype,leaf_eps,lclump,&
                         lrelaxgc_can,kgc_can,lrelaxci_can,kci_can,sw_canrad_meth,lcanradbands,&
-                        ileafphys,lags_tleaf,kgc_open_can,kgc_close_can
+                        ileafphys,lags_tleaf,kgc_open_can,kgc_close_can,ldew_can
 
 
     if(myid==0) then
@@ -300,6 +302,7 @@ contains
     call MPI_BCAST(llength      ,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(transpiretype,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(leaf_eps     ,   1, my_real     , 0, comm3d, mpierr)
+    call MPI_BCAST(ldew_can     ,   1, mpi_logical , 0, comm3d, mpierr)
     call MPI_BCAST(lclump       ,   1, my_real     , 0, comm3d, mpierr)
     call MPI_BCAST(lrelaxgc_can ,   1, mpi_logical , 0, comm3d, mpierr)
     call MPI_BCAST(kgc_can      ,   1, my_real     , 0, comm3d, mpierr)
@@ -713,7 +716,7 @@ contains
     use modglobal, only  : j1,i1,cp,rlv,rk3step,dzf,rhow,xtime,rtimee,timee,xday,xlat,xlon,boltz,dt,Rd,pref0,btime
     use modsurfdata,only : phitot,weight_g,indCO2,l3leaves,nangle_gauss,MW_CO2,MW_Air, &
                            canopyrad_sw_N79,canopyrad_sw_GvL94,canopyrad_lw_N79,pCw,tskinm_surf,canrad_bands_sw,n_bands_sw
-    use modfields, only  : rhof,qt0,exnf,u0,v0,presf,svm,tmp0
+    use modfields, only  : rhof,qt0,ql0,exnf,u0,v0,presf,svm,tmp0
     use modraddata, only : swdir,swdif,swd,swu,lwu,lwd,sfc_emis,iradiation,irad_par,irad_rrtmg,irad_lsm,rad_longw,zenith,tnext,itimerad
     use modfarquhar, only : vcmax25_can
     implicit none
@@ -798,9 +801,10 @@ contains
     end if
    !                  #############  LW  into leaf #################               !
    !other necessary terms
-   ! convert humidity into vapor pressure
+   ! convert humidity into vapor pressure (water vapour only: qt - ql, so that liquid water in fog
+   ! is not counted as vapour)
     do k_can=1,ncanopy+50
-      humidairpa(k_can) =  watervappres(qt0(i,j,k_can),presf(k_can)) !
+      humidairpa(k_can) =  watervappres(qt0(i,j,k_can)-ql0(i,j,k_can),presf(k_can)) !
     enddo
 
     exner = (ps/pref0) ** (rd/cp)
@@ -829,7 +833,7 @@ contains
       endif
      !shaded
       call leafeb_ags(absSWleaf_shad(i,j,k_can), absPARleaf_shad(i,j,k_can), LWin_leafshad(i,j,k_can), leaf_eps, transpiretype, lwidth, llength, & ! in
-                      tmp0(i,j,k_can), humidairpa(k_can),qt0(i,j,k_can), windsp(k_can), presf(k_can),       & ! in
+                      tmp0(i,j,k_can), humidairpa(k_can),qt0(i,j,k_can)-ql0(i,j,k_can), windsp(k_can), presf(k_can), & ! in (vapour)
                       rhof(k_can), svm(i,j,k_can,indCO2), phitot(i,j),                                      & ! in
                       gcc_leafshad_old(i,j,k_can),ci_leafshad_old(i,j,k_can),rk3coef,vc25,                       & ! in
                       t_leafshad(i,j,k_can), gcc_leafshad(i,j,k_can), rb_leafshad(i,j,k_can),ci_leafshad(i,j,k_can),& ! out
@@ -858,7 +862,7 @@ contains
         stop
       else ! angle-dependent SW are averaged following 3 point gaussian procedure (Goudriaan and van Laar 1996)
         call leafeb_ags(absSWleaf_allsun(i,j,k_can), absPARleaf_allsun(i,j,k_can),LWin_leafsun(i,j,k_can), leaf_eps, transpiretype, lwidth, llength, & ! in
-                        tmp0(i,j,k_can), humidairpa(k_can),qt0(i,j,k_can), windsp(k_can), presf(k_can),        & ! in
+                        tmp0(i,j,k_can), humidairpa(k_can),qt0(i,j,k_can)-ql0(i,j,k_can), windsp(k_can), presf(k_can), & ! in (vapour)
                         rhof(k_can), svm(i,j,k_can,indCO2), phitot(i,j),                                       & ! in
                         gcc_leafsun_old(i,j,k_can),ci_leafsun_old(i,j,k_can),rk3coef,vc25,                          & ! in
                         t_leafsun(i,j,k_can), gcc_leafsun(i,j,k_can), rb_leafsun(i,j,k_can),ci_leafsun(i,j,k_can),     & ! out
@@ -1492,10 +1496,18 @@ real function leafle(tleaf, ambvap, gb, gcc, transpiretype)
     ! latent heat of vap [J kg-1] * vap deficit [kg m-3] / leaf resistance [s m-1]
     le = transpiretype * lathv * vapdeficit / leafres
 
-    ! --- for now, don't allow dew on the leaves
+    ! --- negative vapour deficit: the leaf surface is below the dew point of the air.
+    !     ldew_can = .false.: no dew (original behaviour)
+    !     ldew_can = .true. : dew forms on both leaf surfaces; condensation is a surface process, so only the
+    !                         leaf boundary layer acts (no stomatal resistance, not limited by transpiretype).
+    !                         No leaf water store: the dew is not re-evaporated later.
 
     if (le < 0.) then
-       leafle = 0.
+       if (ldew_can) then
+          leafle = 2. * lathv * vapdeficit * 1.075 * gb      ! < 0 [W m-2 leaf]
+       else
+          leafle = 0.
+       endif
     else
        leafle = le
     endif
